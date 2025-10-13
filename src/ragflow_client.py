@@ -25,8 +25,7 @@ class RAGFlowClient:
         self, 
         name: str, 
         description: str = "",
-        permission: str = "me",
-        language: str = "Korean"
+        permission: str = "me"
     ) -> Optional[object]:
         """
         지식베이스 가져오기 또는 생성
@@ -35,7 +34,6 @@ class RAGFlowClient:
             name: 지식베이스 이름
             description: 설명
             permission: 권한 설정 ("me": 나만, "team": 팀 공유)
-            language: 언어 설정 (기본값: "Korean")
         
         Returns:
             Dataset 객체 또는 None
@@ -78,8 +76,7 @@ class RAGFlowClient:
                     dataset = self.rag.create_dataset(
                         name=new_name,
                         description=f"{description} (자동 생성: {timestamp})",
-                        permission=permission,
-                        language=language
+                        permission=permission
                     )
                     logger.info(f"✓ 지식베이스 생성 성공: {new_name}")
                     return dataset
@@ -97,8 +94,7 @@ class RAGFlowClient:
             dataset = self.rag.create_dataset(
                 name=name,
                 description=description,
-                permission=permission,
-                language=language
+                permission=permission
             )
             logger.info(f"✓ 지식베이스 생성 성공: {name}")
             return dataset
@@ -121,8 +117,7 @@ class RAGFlowClient:
                     dataset = self.rag.create_dataset(
                         name=new_name,
                         description=f"{description} (자동 생성: {timestamp})",
-                        permission=permission,
-                        language=language
+                        permission=permission
                     )
                     logger.info(f"✓ 지식베이스 생성 성공: {new_name}")
                     return dataset
