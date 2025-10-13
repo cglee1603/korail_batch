@@ -117,38 +117,57 @@ class RAGFlowClient:
         Returns:
             성공 여부
         """
+        from io import BytesIO
+        
         try:
             if not file_path.exists():
                 logger.error(f"파일이 존재하지 않습니다: {file_path}")
                 return False
             
-            # 파일 읽기
-            with open(file_path, 'rb') as f:
-                blob = f.read()
-            
             # 파일명 설정
             if not display_name:
                 display_name = file_path.name
             
+            # 파일을 BytesIO 스트림으로 읽기
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            # BytesIO 객체 생성 (파일 스트림 형식)
+            file_stream = BytesIO(file_content)
+            file_stream.name = display_name  # 파일명 속성 추가
+            
             # 업로드할 문서 정보
             doc_info = {
                 "display_name": display_name,
-                "blob": blob
+                "blob": file_stream  # BytesIO 스트림으로 전달
             }
             
-            logger.info(f"파일 업로드 시작: {display_name}")
-            uploaded_docs = dataset.upload_documents([doc_info])
+            logger.info(f"파일 업로드 시작: {display_name} ({len(file_content)/1024/1024:.2f} MB)")
             
-            # 메타데이터 설정 (업로드 후)
-            if metadata and uploaded_docs and len(uploaded_docs) > 0:
-                doc = uploaded_docs[0]
-                self.set_document_metadata(doc, metadata)
+            try:
+                uploaded_docs = dataset.upload_documents([doc_info])
+                
+                if not uploaded_docs or len(uploaded_docs) == 0:
+                    logger.error(f"업로드 응답에 문서가 없습니다: {display_name}")
+                    return False
+                
+                logger.info(f"✓ 파일 업로드 성공: {display_name}")
+                
+                # 메타데이터 설정 (업로드 후)
+                if metadata:
+                    doc = uploaded_docs[0]
+                    self.set_document_metadata(doc, metadata)
+                
+                return True
             
-            logger.info(f"파일 업로드 완료: {display_name}")
-            return True
+            finally:
+                # 스트림 닫기
+                file_stream.close()
         
         except Exception as e:
-            logger.error(f"파일 업로드 실패 ({file_path}): {e}")
+            logger.error(f"✗ 파일 업로드 실패 ({file_path.name}): {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def set_document_metadata(
