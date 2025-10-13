@@ -117,18 +117,18 @@ class RAGFlowClient:
         display_name: str = None
     ) -> bool:
         """
-        파일을 지식베이스에 업로드
+        파일을 지식베이스에 업로드 (SDK 방식 - UI와 동일)
         
         Args:
             dataset: Dataset 객체
             file_path: 업로드할 파일 경로
-            metadata: 메타데이터
+            metadata: 메타데이터 (사용 안 함 - MinIO 참조 손상 방지)
             display_name: 표시 이름
         
         Returns:
             성공 여부
         """
-        import requests
+        from io import BytesIO
         
         try:
             if not file_path.exists():
@@ -139,42 +139,42 @@ class RAGFlowClient:
             if not display_name:
                 display_name = file_path.name
             
-            file_size = file_path.stat().st_size
+            # 파일 읽기
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            file_size = len(file_content)
             logger.info(f"파일 업로드 시작: {display_name} ({file_size/1024/1024:.2f} MB)")
             
-            # RAGFlow API 직접 호출 (실제 파일 경로 사용)
-            url = f"{self.base_url}/api/v1/datasets/{dataset.id}/documents"
-            headers = {"Authorization": f"Bearer {self.api_key}"}
+            # BytesIO 스트림 생성 (UI 방식과 동일)
+            file_stream = BytesIO(file_content)
+            file_stream.name = display_name
+            file_stream.seek(0)
             
-            # 실제 파일을 직접 열어서 전달 (requests가 파일을 읽음)
-            with open(file_path, 'rb') as file_obj:
-                files = {"file": (display_name, file_obj)}
+            # 업로드할 문서 정보
+            doc_info = {
+                "display_name": display_name,
+                "blob": file_stream
+            }
+            
+            try:
+                # SDK 메서드 사용 (UI와 동일)
+                uploaded_docs = dataset.upload_documents([doc_info])
                 
-                response = requests.post(
-                    url=url,
-                    headers=headers,
-                    files=files,
-                    timeout=300  # 5분 타임아웃
-                )
-            
-            # 응답 확인
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("code") == 0:
-                    logger.info(f"✓ 파일 업로드 성공: {display_name}")
-                    
-                    # 메타데이터 업데이트 제거 - MinIO 파일 참조 손상 방지
-                    if metadata:
-                        logger.debug(f"메타데이터 (미적용): {metadata}")
-                    
-                    return True
-                else:
-                    logger.error(f"✗ 업로드 실패: {result.get('message')}")
+                if not uploaded_docs or len(uploaded_docs) == 0:
+                    logger.error(f"업로드 응답에 문서가 없습니다: {display_name}")
                     return False
-            else:
-                logger.error(f"✗ HTTP 에러: {response.status_code}")
-                logger.debug(f"응답: {response.text[:200]}")
-                return False
+                
+                logger.info(f"✓ 파일 업로드 성공: {display_name}")
+                
+                # 메타데이터 업데이트 제거 - MinIO 파일 참조 손상 방지
+                if metadata:
+                    logger.debug(f"메타데이터 (미적용): {metadata}")
+                
+                return True
+            
+            finally:
+                file_stream.close()
         
         except Exception as e:
             logger.error(f"✗ 파일 업로드 실패 ({file_path.name}): {e}")
