@@ -63,15 +63,13 @@ class RAGFlowClient:
                         else:
                             logger.error(f"✗ 지식베이스 삭제 실패: {delete_error}")
                             return None
+            else:
+                logger.info(f"기존 지식베이스 없음: {name}")
         
         except Exception as list_error:
-            error_msg = str(list_error)
-            if "don't own" in error_msg.lower() or "permission" in error_msg.lower():
-                logger.error(f"✗ 지식베이스 '{name}' 검색 실패 - 다른 사용자 소유")
-                logger.error(f"  다른 사용자가 소유한 '{name}' 지식베이스가 존재하여 생성할 수 없습니다.")
-                return None
-            # 검색 결과 없음 또는 다른 에러 - 계속 진행
-            logger.debug(f"지식베이스 검색 중 에러 (무시하고 계속): {list_error}")
+            # list_datasets() 호출 실패 - 일단 생성 시도
+            logger.warning(f"지식베이스 검색 중 에러 발생 (생성 단계 진행): {list_error}")
+            logger.debug(f"상세 에러: {type(list_error).__name__} - {str(list_error)}")
         
         # 2. 새 지식베이스 생성
         try:
@@ -85,7 +83,19 @@ class RAGFlowClient:
             return dataset
         
         except Exception as create_error:
-            logger.error(f"✗ 지식베이스 생성 실패 ({name}): {create_error}")
+            error_msg = str(create_error)
+            logger.error(f"✗ 지식베이스 생성 실패 ({name})")
+            logger.error(f"  에러 타입: {type(create_error).__name__}")
+            logger.error(f"  에러 메시지: {error_msg}")
+            
+            # 이름 중복이나 권한 문제인 경우 추가 안내
+            if ("don't own" in error_msg.lower() or 
+                "already exists" in error_msg.lower() or 
+                "duplicate" in error_msg.lower() or
+                "permission" in error_msg.lower()):
+                logger.error(f"  → 동일한 이름의 지식베이스가 다른 사용자에게 있거나 이미 존재합니다.")
+                logger.error(f"  → RAGFlow UI에서 '{name}' 지식베이스를 직접 확인하고 삭제해주세요.")
+            
             return None
     
     def upload_document(
