@@ -163,10 +163,15 @@ class RAGFlowClient:
                 
                 logger.info(f"✓ 파일 업로드 성공: {display_name}")
                 
-                # 메타데이터 설정 (업로드 후)
+                # 메타데이터 설정 주석 처리 - MinIO 파일 참조 손상 방지
+                # RAGFlow SDK의 doc.update()가 MinIO 저장 정보를 덮어쓰는 문제 발생
+                # 메타데이터는 파일명에 포함시키거나, 별도 관리 필요
+                # if metadata:
+                #     doc = uploaded_docs[0]
+                #     self.set_document_metadata(doc, metadata)
+                
                 if metadata:
-                    doc = uploaded_docs[0]
-                    self.set_document_metadata(doc, metadata)
+                    logger.debug(f"메타데이터 (미적용): {metadata}")
                 
                 return True
             

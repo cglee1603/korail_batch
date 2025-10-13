@@ -19,8 +19,10 @@ RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "http://localhost:9380")
 DATASET_PERMISSION = os.getenv("DATASET_PERMISSION", "me")  # "me" 또는 "team"
 DATASET_LANGUAGE = os.getenv("DATASET_LANGUAGE", "Korean")
 
-# 임베딩 모델 설정 (RAGFlow UI와 동일한 모델 사용)
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
+# 임베딩 모델 설정
+# RAGFlow UI와 동일한 모델 사용 (주의: @Custom 접미사 제거)
+# 사용 가능한 모델: qwen3-embedding:8b, BAAI/bge-large-zh-v1.5, BAAI/bge-small-zh-v1.5
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
 
 # 파일 경로 설정
 EXCEL_FILE_PATH = os.getenv("EXCEL_FILE_PATH", "./data/input.xlsx")
