@@ -101,7 +101,9 @@ def test_upload():
                     # 파싱 시작
                     if doc.run == "UNSTART" or doc.run == "0":
                         logger.info(f"\n파싱 시작...")
-                        doc.parse()
+                        
+                        # Dataset의 async_parse_documents 사용
+                        client.start_batch_parse(dataset)
                         logger.info(f"✓ 파싱 요청 완료")
                         
                         # 잠시 대기 후 상태 확인

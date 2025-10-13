@@ -196,35 +196,38 @@ def retry_failed_parsing(dataset_name: str = None):
             try:
                 documents = dataset.list_documents()
                 
+                # 파싱이 필요한 문서 ID 수집
+                doc_ids_to_parse = []
+                
                 for doc in documents:
                     doc_name = doc.name if hasattr(doc, 'name') else 'Unknown'
+                    run_status = getattr(doc, 'run', None)
                     
-                    try:
-                        # run: "3" = 실패, "0" = 대기
-                        run_status = getattr(doc, 'run', None)
-                        
-                        # 실패 상태면 재시도
-                        if run_status == "3":
-                            logger.info(f"  재시도: {doc_name} (현재 run={run_status})")
-                            doc.parse()
-                            retry_count += 1
-                            time.sleep(2)  # 요청 간 대기
-                        elif run_status == "0":
-                            logger.info(f"  파싱 시작: {doc_name} (대기 상태)")
-                            doc.parse()
-                            retry_count += 1
-                            time.sleep(2)
-                    
-                    except Exception as e:
-                        logger.error(f"  문서 '{doc_name}' 재시도 실패: {e}")
+                    # UNSTART, 실패(3), 대기(0) 상태면 파싱 필요
+                    if run_status in ["UNSTART", "3", "0"]:
+                        logger.info(f"  파싱 필요: {doc_name} (run={run_status})")
+                        doc_ids_to_parse.append(doc.id)
+                
+                # 일괄 파싱 요청
+                if doc_ids_to_parse:
+                    logger.info(f"\n{len(doc_ids_to_parse)}개 문서 일괄 파싱 시작...")
+                    dataset.async_parse_documents(doc_ids_to_parse)
+                    logger.info(f"✓ 파싱 요청 완료")
+                    retry_count += len(doc_ids_to_parse)
+                else:
+                    logger.info(f"  파싱이 필요한 문서가 없습니다.")
             
             except Exception as e:
                 logger.error(f"지식베이스 '{ds_name}' 처리 실패: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
-        logger.info(f"\n총 {retry_count}개 문서 재시도 완료")
+        logger.info(f"\n총 {retry_count}개 문서 파싱 요청 완료")
     
     except Exception as e:
         logger.error(f"재시도 실패: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 def check_server_logs():

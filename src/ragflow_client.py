@@ -135,6 +135,7 @@ class RAGFlowClient:
             # BytesIO 객체 생성 (파일 스트림 형식)
             file_stream = BytesIO(file_content)
             file_stream.name = display_name  # 파일명 속성 추가
+            file_stream.seek(0)  # 파일 포인터를 처음으로 되돌리기 (중요!)
             
             # 업로드할 문서 정보
             doc_info = {
@@ -198,12 +199,10 @@ class RAGFlowClient:
     
     def start_batch_parse(self, dataset: object) -> bool:
         """
-        지식베이스의 모든 문서를 순차적으로 파싱
+        지식베이스의 모든 문서 일괄 파싱
         
-        각 문서를 파싱하고 완료될 때까지 기다린 후 다음 문서로 진행합니다.
+        Dataset의 async_parse_documents() 메서드를 사용합니다.
         """
-        import time
-        
         try:
             logger.info(f"일괄 파싱 시작: {dataset.name}")
             
@@ -216,119 +215,31 @@ class RAGFlowClient:
             
             logger.info(f"총 {len(documents)}개 문서 파싱 예정")
             
-            # 각 문서를 순차적으로 파싱
-            success_count = 0
-            failed_count = 0
+            # 문서 ID 목록 수집
+            document_ids = [doc.id for doc in documents if hasattr(doc, 'id')]
             
-            for idx, doc in enumerate(documents, 1):
-                doc_name = doc.name if hasattr(doc, 'name') else 'Unknown'
-                
-                try:
-                    logger.info(f"\n[{idx}/{len(documents)}] 문서 파싱 시작: {doc_name}")
-                    
-                    # 파싱 메서드 확인
-                    if not hasattr(doc, 'parse'):
-                        logger.warning(f"파싱 메서드를 찾을 수 없습니다: {doc_name}")
-                        failed_count += 1
-                        continue
-                    
-                    # 파싱 요청
-                    doc.parse()
-                    logger.info(f"  → 파싱 요청 완료, 상태 모니터링 시작...")
-                    
-                    # 파싱 완료 대기 (상태 모니터링)
-                    if self._wait_for_parsing_complete(doc, doc_name):
-                        success_count += 1
-                        logger.info(f"  ✓ [{idx}/{len(documents)}] 파싱 완료: {doc_name}")
-                    else:
-                        failed_count += 1
-                        logger.error(f"  ✗ [{idx}/{len(documents)}] 파싱 실패 또는 타임아웃: {doc_name}")
-                
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"  ✗ [{idx}/{len(documents)}] 문서 파싱 중 에러 ({doc_name}): {e}")
-                    continue
+            if not document_ids:
+                logger.error("문서 ID를 찾을 수 없습니다.")
+                return False
             
-            # 최종 결과
-            logger.info(f"\n{'='*60}")
-            logger.info(f"일괄 파싱 완료")
-            logger.info(f"  - 성공: {success_count}/{len(documents)}")
-            logger.info(f"  - 실패: {failed_count}/{len(documents)}")
-            logger.info(f"{'='*60}\n")
+            logger.info(f"문서 ID: {document_ids}")
             
-            return success_count > 0
+            # 일괄 파싱 요청
+            try:
+                dataset.async_parse_documents(document_ids)
+                logger.info(f"✓ 일괄 파싱 요청 완료")
+                logger.info(f"파싱은 백그라운드에서 진행됩니다.")
+                logger.info(f"RAGFlow UI에서 진행 상태를 확인하세요.")
+                return True
+            
+            except Exception as e:
+                logger.error(f"일괄 파싱 요청 실패: {e}")
+                return False
         
         except Exception as e:
             logger.error(f"일괄 파싱 실패: {e}")
             return False
     
-    def _wait_for_parsing_complete(
-        self, 
-        doc: object, 
-        doc_name: str,
-        max_wait_seconds: int = 300,
-        check_interval: int = 3
-    ) -> bool:
-        """
-        문서 파싱이 완료될 때까지 대기
-        
-        Args:
-            doc: Document 객체
-            doc_name: 문서 이름 (로깅용)
-            max_wait_seconds: 최대 대기 시간 (초)
-            check_interval: 상태 체크 간격 (초)
-        
-        Returns:
-            파싱 성공 여부
-        """
-        import time
-        
-        elapsed_time = 0
-        last_status = None
-        
-        while elapsed_time < max_wait_seconds:
-            try:
-                # 문서 정보 새로고침
-                doc_info = doc.get()
-                
-                # 상태 확인 (다양한 필드명 시도)
-                status = None
-                for status_field in ['status', 'parsing_status', 'parse_status', 'progress']:
-                    if hasattr(doc_info, status_field):
-                        status = getattr(doc_info, status_field)
-                        break
-                
-                # 상태 출력 (변경된 경우만)
-                if status and status != last_status:
-                    logger.info(f"    상태: {status} ({elapsed_time}초 경과)")
-                    last_status = status
-                
-                # 완료 상태 확인
-                if status:
-                    status_lower = str(status).lower()
-                    
-                    # 성공 상태
-                    if any(keyword in status_lower for keyword in ['done', 'success', 'completed', 'finish']):
-                        logger.info(f"    파싱 완료 ({elapsed_time}초 소요)")
-                        return True
-                    
-                    # 실패 상태
-                    if any(keyword in status_lower for keyword in ['fail', 'error', 'cancel']):
-                        logger.error(f"    파싱 실패 상태: {status}")
-                        return False
-                
-                # 대기
-                time.sleep(check_interval)
-                elapsed_time += check_interval
-            
-            except Exception as e:
-                logger.error(f"    상태 확인 중 에러: {e}")
-                time.sleep(check_interval)
-                elapsed_time += check_interval
-        
-        # 타임아웃
-        logger.warning(f"    파싱 타임아웃 ({max_wait_seconds}초 초과)")
-        return False
     
     def get_dataset_info(self, dataset: object) -> Dict:
         """지식베이스 정보 조회"""
