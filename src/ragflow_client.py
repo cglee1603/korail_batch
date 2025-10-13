@@ -28,7 +28,9 @@ class RAGFlowClient:
         permission: str = "me"
     ) -> Optional[object]:
         """
-        지식베이스 가져오기 또는 생성
+        지식베이스 삭제 후 재생성
+        
+        동일한 이름의 지식베이스가 존재하면 삭제하고 새로 생성합니다.
         
         Args:
             name: 지식베이스 이름
@@ -38,57 +40,40 @@ class RAGFlowClient:
         Returns:
             Dataset 객체 또는 None
         """
-        from datetime import datetime
-        
-        # 기존 지식베이스 검색 시도
+        # 1. 기존 지식베이스 검색 및 삭제
         try:
             datasets = self.rag.list_datasets(name=name)
             
             if datasets and len(datasets) > 0:
-                # 첫 번째 데이터셋 접근 시도 (소유권 확인)
-                try:
-                    dataset = datasets[0]
-                    # 소유권 확인을 위해 문서 목록 조회 시도
-                    _ = dataset.list_documents()
-                    logger.info(f"기존 지식베이스 사용: {name}")
-                    return dataset
-                except Exception as access_error:
-                    # 접근 권한 없음 - 다른 사용자 소유
-                    error_msg = str(access_error)
-                    if "don't own" in error_msg.lower() or "permission" in error_msg.lower():
-                        logger.warning(f"지식베이스 '{name}'는 다른 사용자 소유입니다. 새로 생성합니다.")
-                    else:
-                        raise access_error
+                logger.info(f"기존 지식베이스 발견: {name} (총 {len(datasets)}개)")
+                
+                # 모든 동일 이름 지식베이스 삭제 시도
+                for idx, dataset in enumerate(datasets, 1):
+                    try:
+                        dataset_id = dataset.id if hasattr(dataset, 'id') else 'Unknown'
+                        logger.info(f"기존 지식베이스 삭제 시도 [{idx}/{len(datasets)}]: {name} (ID: {dataset_id})")
+                        dataset.delete()
+                        logger.info(f"✓ 지식베이스 삭제 완료: {name}")
+                    except Exception as delete_error:
+                        error_msg = str(delete_error)
+                        if "don't own" in error_msg.lower() or "permission" in error_msg.lower():
+                            logger.error(f"✗ 삭제 권한 없음: {name} - 다른 사용자 소유")
+                            logger.error(f"  다른 사용자가 소유한 '{name}' 지식베이스가 존재하여 생성할 수 없습니다.")
+                            return None
+                        else:
+                            logger.error(f"✗ 지식베이스 삭제 실패: {delete_error}")
+                            return None
         
         except Exception as list_error:
-            # list_datasets() 호출 자체가 실패 (다른 사용자 소유로 검색 불가)
             error_msg = str(list_error)
             if "don't own" in error_msg.lower() or "permission" in error_msg.lower():
-                logger.warning(f"지식베이스 '{name}'는 이미 존재하지만 다른 사용자 소유입니다.")
-                logger.info(f"타임스탬프를 추가하여 새 지식베이스를 생성합니다.")
-                
-                # 타임스탬프 추가하여 새 이름 생성
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                new_name = f"{name}_{timestamp}"
-                
-                try:
-                    logger.info(f"새 지식베이스 생성: {new_name}")
-                    dataset = self.rag.create_dataset(
-                        name=new_name,
-                        description=f"{description} (자동 생성: {timestamp})",
-                        permission=permission
-                    )
-                    logger.info(f"✓ 지식베이스 생성 성공: {new_name}")
-                    return dataset
-                except Exception as create_error:
-                    logger.error(f"지식베이스 생성 실패 ({new_name}): {create_error}")
-                    return None
-            else:
-                # 다른 종류의 에러
-                logger.error(f"지식베이스 검색 실패 ({name}): {list_error}")
+                logger.error(f"✗ 지식베이스 '{name}' 검색 실패 - 다른 사용자 소유")
+                logger.error(f"  다른 사용자가 소유한 '{name}' 지식베이스가 존재하여 생성할 수 없습니다.")
                 return None
+            # 검색 결과 없음 또는 다른 에러 - 계속 진행
+            logger.debug(f"지식베이스 검색 중 에러 (무시하고 계속): {list_error}")
         
-        # 새 지식베이스 생성 (검색 결과 없음)
+        # 2. 새 지식베이스 생성
         try:
             logger.info(f"새 지식베이스 생성: {name}")
             dataset = self.rag.create_dataset(
@@ -100,33 +85,8 @@ class RAGFlowClient:
             return dataset
         
         except Exception as create_error:
-            create_error_msg = str(create_error)
-            
-            # "You don't own" 에러 또는 이름 중복 에러
-            if ("don't own" in create_error_msg.lower() or 
-                "already exists" in create_error_msg.lower() or 
-                "duplicate" in create_error_msg.lower()):
-                
-                # 타임스탬프 추가하여 재시도
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                new_name = f"{name}_{timestamp}"
-                logger.warning(f"지식베이스 '{name}' 생성 실패 (이미 존재하거나 권한 없음)")
-                logger.info(f"새 이름으로 재시도: {new_name}")
-                
-                try:
-                    dataset = self.rag.create_dataset(
-                        name=new_name,
-                        description=f"{description} (자동 생성: {timestamp})",
-                        permission=permission
-                    )
-                    logger.info(f"✓ 지식베이스 생성 성공: {new_name}")
-                    return dataset
-                except Exception as retry_error:
-                    logger.error(f"지식베이스 재생성 실패 ({new_name}): {retry_error}")
-                    return None
-            else:
-                logger.error(f"지식베이스 생성 실패 ({name}): {create_error}")
-                return None
+            logger.error(f"✗ 지식베이스 생성 실패 ({name}): {create_error}")
+            return None
     
     def upload_document(
         self, 
@@ -209,12 +169,12 @@ class RAGFlowClient:
     
     def start_batch_parse(self, dataset: object) -> bool:
         """
-        지식베이스의 모든 문서 일괄 파싱 시작
+        지식베이스의 모든 문서를 순차적으로 파싱
         
-        Note:
-            RAGFlow SDK에 일괄 파싱 메서드가 있는지 확인 필요
-            없다면 개별 문서별로 파싱 요청
+        각 문서를 파싱하고 완료될 때까지 기다린 후 다음 문서로 진행합니다.
         """
+        import time
+        
         try:
             logger.info(f"일괄 파싱 시작: {dataset.name}")
             
@@ -225,26 +185,121 @@ class RAGFlowClient:
                 logger.warning("파싱할 문서가 없습니다.")
                 return True
             
-            # 각 문서 파싱
-            success_count = 0
-            for doc in documents:
-                try:
-                    # SDK에 parse 메서드가 있는지 확인
-                    if hasattr(doc, 'parse'):
-                        doc.parse()
-                        success_count += 1
-                        logger.info(f"문서 파싱 요청: {doc.name}")
-                    else:
-                        logger.warning(f"파싱 메서드를 찾을 수 없습니다: {doc.name}")
-                except Exception as e:
-                    logger.error(f"문서 파싱 실패 ({doc.name}): {e}")
+            logger.info(f"총 {len(documents)}개 문서 파싱 예정")
             
-            logger.info(f"일괄 파싱 완료: {success_count}/{len(documents)} 성공")
+            # 각 문서를 순차적으로 파싱
+            success_count = 0
+            failed_count = 0
+            
+            for idx, doc in enumerate(documents, 1):
+                doc_name = doc.name if hasattr(doc, 'name') else 'Unknown'
+                
+                try:
+                    logger.info(f"\n[{idx}/{len(documents)}] 문서 파싱 시작: {doc_name}")
+                    
+                    # 파싱 메서드 확인
+                    if not hasattr(doc, 'parse'):
+                        logger.warning(f"파싱 메서드를 찾을 수 없습니다: {doc_name}")
+                        failed_count += 1
+                        continue
+                    
+                    # 파싱 요청
+                    doc.parse()
+                    logger.info(f"  → 파싱 요청 완료, 상태 모니터링 시작...")
+                    
+                    # 파싱 완료 대기 (상태 모니터링)
+                    if self._wait_for_parsing_complete(doc, doc_name):
+                        success_count += 1
+                        logger.info(f"  ✓ [{idx}/{len(documents)}] 파싱 완료: {doc_name}")
+                    else:
+                        failed_count += 1
+                        logger.error(f"  ✗ [{idx}/{len(documents)}] 파싱 실패 또는 타임아웃: {doc_name}")
+                
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"  ✗ [{idx}/{len(documents)}] 문서 파싱 중 에러 ({doc_name}): {e}")
+                    continue
+            
+            # 최종 결과
+            logger.info(f"\n{'='*60}")
+            logger.info(f"일괄 파싱 완료")
+            logger.info(f"  - 성공: {success_count}/{len(documents)}")
+            logger.info(f"  - 실패: {failed_count}/{len(documents)}")
+            logger.info(f"{'='*60}\n")
+            
             return success_count > 0
         
         except Exception as e:
             logger.error(f"일괄 파싱 실패: {e}")
             return False
+    
+    def _wait_for_parsing_complete(
+        self, 
+        doc: object, 
+        doc_name: str,
+        max_wait_seconds: int = 300,
+        check_interval: int = 3
+    ) -> bool:
+        """
+        문서 파싱이 완료될 때까지 대기
+        
+        Args:
+            doc: Document 객체
+            doc_name: 문서 이름 (로깅용)
+            max_wait_seconds: 최대 대기 시간 (초)
+            check_interval: 상태 체크 간격 (초)
+        
+        Returns:
+            파싱 성공 여부
+        """
+        import time
+        
+        elapsed_time = 0
+        last_status = None
+        
+        while elapsed_time < max_wait_seconds:
+            try:
+                # 문서 정보 새로고침
+                doc_info = doc.get()
+                
+                # 상태 확인 (다양한 필드명 시도)
+                status = None
+                for status_field in ['status', 'parsing_status', 'parse_status', 'progress']:
+                    if hasattr(doc_info, status_field):
+                        status = getattr(doc_info, status_field)
+                        break
+                
+                # 상태 출력 (변경된 경우만)
+                if status and status != last_status:
+                    logger.info(f"    상태: {status} ({elapsed_time}초 경과)")
+                    last_status = status
+                
+                # 완료 상태 확인
+                if status:
+                    status_lower = str(status).lower()
+                    
+                    # 성공 상태
+                    if any(keyword in status_lower for keyword in ['done', 'success', 'completed', 'finish']):
+                        logger.info(f"    파싱 완료 ({elapsed_time}초 소요)")
+                        return True
+                    
+                    # 실패 상태
+                    if any(keyword in status_lower for keyword in ['fail', 'error', 'cancel']):
+                        logger.error(f"    파싱 실패 상태: {status}")
+                        return False
+                
+                # 대기
+                time.sleep(check_interval)
+                elapsed_time += check_interval
+            
+            except Exception as e:
+                logger.error(f"    상태 확인 중 에러: {e}")
+                time.sleep(check_interval)
+                elapsed_time += check_interval
+        
+        # 타임아웃
+        logger.warning(f"    파싱 타임아웃 ({max_wait_seconds}초 초과)")
+        return False
     
     def get_dataset_info(self, dataset: object) -> Dict:
         """지식베이스 정보 조회"""
