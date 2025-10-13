@@ -71,80 +71,70 @@ def diagnose_all_datasets():
                     logger.info(f"\n  [{doc_idx}/{len(documents)}] 문서: {doc_name}")
                     logger.info(f"  {'-'*70}")
                     
-                    # 문서 상세 정보 조회
+                    # 문서 정보는 doc 객체 자체에 있음 (get() 호출 불필요)
                     try:
-                        doc_info = doc.get()
-                        
                         # 기본 정보 출력
-                        if hasattr(doc_info, 'id'):
-                            logger.info(f"    ID: {doc_info.id}")
+                        if hasattr(doc, 'id'):
+                            logger.info(f"    ID: {doc.id}")
                         
-                        if hasattr(doc_info, 'size'):
-                            size_mb = doc_info.size / (1024 * 1024)
+                        if hasattr(doc, 'size'):
+                            size_mb = doc.size / (1024 * 1024)
                             logger.info(f"    크기: {size_mb:.2f} MB")
                         
-                        if hasattr(doc_info, 'type'):
-                            logger.info(f"    타입: {doc_info.type}")
+                        if hasattr(doc, 'type'):
+                            logger.info(f"    타입: {doc.type}")
                         
-                        # 파싱 상태 확인
-                        status = None
-                        status_field_name = None
+                        # 파싱 상태 확인 (여러 필드 체크)
+                        # run: "0" (대기), "1" (처리 중), "2" (완료), "3" (실패)
+                        # status: "1" (정상), "0" (삭제됨)
+                        # progress: 0.0 ~ 1.0
                         
-                        # 다양한 상태 필드명 시도
-                        for field in ['status', 'parsing_status', 'parse_status', 'progress', 'run']:
-                            if hasattr(doc_info, field):
-                                status = getattr(doc_info, field)
-                                status_field_name = field
-                                break
+                        run_status = getattr(doc, 'run', None)
+                        status = getattr(doc, 'status', None)
+                        progress = getattr(doc, 'progress', None)
+                        progress_msg = getattr(doc, 'progress_msg', '')
                         
-                        if status:
-                            logger.info(f"    상태 ({status_field_name}): {status}")
-                            
-                            # 상태 분류
-                            status_lower = str(status).lower()
-                            if 'fail' in status_lower or 'error' in status_lower:
-                                parsing_status['failed'] += 1
-                                failed_docs.append(doc_name)
-                                logger.error(f"    ⚠ 파싱 실패!")
-                            elif 'done' in status_lower or 'success' in status_lower or 'completed' in status_lower:
-                                parsing_status['done'] += 1
-                                logger.info(f"    ✓ 파싱 완료")
-                            elif 'pars' in status_lower or 'process' in status_lower:
-                                parsing_status['parsing'] += 1
-                                logger.info(f"    ⏳ 파싱 중...")
-                            elif 'pend' in status_lower or 'wait' in status_lower:
-                                parsing_status['pending'] += 1
-                                logger.info(f"    ⏸ 대기 중...")
-                            else:
-                                parsing_status['unknown'] += 1
-                                logger.warning(f"    ? 알 수 없는 상태")
+                        logger.info(f"    run: {run_status}")
+                        logger.info(f"    status: {status}")
+                        logger.info(f"    progress: {progress}")
+                        if progress_msg:
+                            logger.info(f"    progress_msg: {progress_msg}")
+                        
+                        # 파싱 상태 분류
+                        if run_status == "3":  # 실패
+                            parsing_status['failed'] += 1
+                            failed_docs.append(doc_name)
+                            logger.error(f"    ⚠ 파싱 실패!")
+                        elif run_status == "2":  # 완료
+                            parsing_status['done'] += 1
+                            logger.info(f"    ✓ 파싱 완료")
+                        elif run_status == "1":  # 처리 중
+                            parsing_status['parsing'] += 1
+                            logger.info(f"    ⏳ 파싱 중... ({progress*100:.1f}%)")
+                        elif run_status == "0":  # 대기
+                            parsing_status['pending'] += 1
+                            logger.info(f"    ⏸ 파싱 대기 중...")
                         else:
                             parsing_status['unknown'] += 1
-                            logger.warning(f"    상태 정보 없음")
+                            logger.warning(f"    ? 알 수 없는 상태 (run={run_status})")
                         
                         # 청크 정보
-                        if hasattr(doc_info, 'chunk_num'):
-                            logger.info(f"    청크 수: {doc_info.chunk_num}")
+                        if hasattr(doc, 'chunk_count'):
+                            logger.info(f"    청크 수: {doc.chunk_count}")
                         
-                        if hasattr(doc_info, 'token_num'):
-                            logger.info(f"    토큰 수: {doc_info.token_num}")
+                        if hasattr(doc, 'token_count'):
+                            logger.info(f"    토큰 수: {doc.token_count}")
                         
-                        # 에러 메시지 확인
-                        for error_field in ['error', 'error_message', 'message', 'reason']:
-                            if hasattr(doc_info, error_field):
-                                error_msg = getattr(doc_info, error_field)
-                                if error_msg:
-                                    logger.error(f"    에러 메시지: {error_msg}")
+                        # 처리 시간 정보
+                        if hasattr(doc, 'process_begin_at') and doc.process_begin_at:
+                            logger.info(f"    처리 시작: {doc.process_begin_at}")
                         
-                        # 생성/수정 시간
-                        if hasattr(doc_info, 'created_at'):
-                            logger.info(f"    생성 시간: {doc_info.created_at}")
+                        if hasattr(doc, 'process_duration') and doc.process_duration:
+                            logger.info(f"    처리 시간: {doc.process_duration:.2f}초")
                         
-                        if hasattr(doc_info, 'updated_at'):
-                            logger.info(f"    수정 시간: {doc_info.updated_at}")
-                        
-                        # 모든 속성 출력 (디버깅용)
-                        logger.debug(f"    전체 속성: {dir(doc_info)}")
+                        # 생성 정보
+                        if hasattr(doc, 'created_by'):
+                            logger.info(f"    생성자: {doc.created_by}")
                     
                     except Exception as e:
                         logger.error(f"    문서 정보 조회 실패: {e}")
@@ -210,21 +200,20 @@ def retry_failed_parsing(dataset_name: str = None):
                     doc_name = doc.name if hasattr(doc, 'name') else 'Unknown'
                     
                     try:
-                        doc_info = doc.get()
-                        
-                        # 상태 확인
-                        status = None
-                        for field in ['status', 'parsing_status', 'parse_status']:
-                            if hasattr(doc_info, field):
-                                status = getattr(doc_info, field)
-                                break
+                        # run: "3" = 실패, "0" = 대기
+                        run_status = getattr(doc, 'run', None)
                         
                         # 실패 상태면 재시도
-                        if status and ('fail' in str(status).lower() or 'error' in str(status).lower()):
-                            logger.info(f"  재시도: {doc_name} (현재 상태: {status})")
+                        if run_status == "3":
+                            logger.info(f"  재시도: {doc_name} (현재 run={run_status})")
                             doc.parse()
                             retry_count += 1
                             time.sleep(2)  # 요청 간 대기
+                        elif run_status == "0":
+                            logger.info(f"  파싱 시작: {doc_name} (대기 상태)")
+                            doc.parse()
+                            retry_count += 1
+                            time.sleep(2)
                     
                     except Exception as e:
                         logger.error(f"  문서 '{doc_name}' 재시도 실패: {e}")
