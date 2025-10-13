@@ -74,14 +74,20 @@ class RAGFlowClient:
         # 2. 새 지식베이스 생성
         try:
             logger.info(f"새 지식베이스 생성: {name}")
-            logger.info(f"  - 임베딩 모델: {embedding_model}")
+            logger.info(f"  - 임베딩 모델: {embedding_model if embedding_model else '시스템 기본값'}")
             logger.info(f"  - 권한: {permission}")
-            dataset = self.rag.create_dataset(
-                name=name,
-                description=description,
-                permission=permission,
-                embedding_model=embedding_model
-            )
+            
+            # embedding_model이 None이거나 빈 문자열이면 파라미터에서 제외
+            create_params = {
+                "name": name,
+                "description": description,
+                "permission": permission
+            }
+            
+            if embedding_model:
+                create_params["embedding_model"] = embedding_model
+            
+            dataset = self.rag.create_dataset(**create_params)
             logger.info(f"✓ 지식베이스 생성 성공: {name}")
             return dataset
         
