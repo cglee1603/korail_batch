@@ -1,0 +1,25 @@
+1.0.0
+
+Release Notes:
+- 초기 릴리스
+- 엑셀 파일에서 하이퍼링크 자동 추출
+- 시트별 지식베이스 자동 생성
+- 파일 형식별 자동 변환 (HWP, ZIP)
+- 메타데이터 자동 추가
+- 스케줄링 지원
+- 상세 로깅
+
+지원 파일 형식:
+- TXT: 직접 업로드
+- PDF: 직접 업로드
+- HWP: PDF 변환 후 업로드 (스터브 구현)
+- ZIP: 압축 해제 후 개별 처리
+
+요구사항:
+- Python 3.8 이상
+- RAGFlow Plus 서버
+- openpyxl, ragflow-sdk, requests 등 (requirements.txt 참조)
+
+작성일: 2025-05-15
+작성자: RAGFlow Plus 팀
+
