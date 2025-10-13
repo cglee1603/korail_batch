@@ -128,8 +128,6 @@ class RAGFlowClient:
         Returns:
             성공 여부
         """
-        from io import BytesIO
-        
         try:
             if not file_path.exists():
                 logger.error(f"파일이 존재하지 않습니다: {file_path}")
@@ -139,24 +137,22 @@ class RAGFlowClient:
             if not display_name:
                 display_name = file_path.name
             
-            # 파일을 BytesIO 스트림으로 읽기
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
+            # 파일 크기 확인
+            file_size = file_path.stat().st_size
+            logger.info(f"파일 업로드 시작: {display_name} ({file_size/1024/1024:.2f} MB)")
             
-            # BytesIO 객체 생성 (파일 스트림 형식)
-            file_stream = BytesIO(file_content)
-            file_stream.name = display_name  # 파일명 속성 추가
-            file_stream.seek(0)  # 파일 포인터를 처음으로 되돌리기 (중요!)
-            
-            # 업로드할 문서 정보
-            doc_info = {
-                "display_name": display_name,
-                "blob": file_stream  # BytesIO 스트림으로 전달
-            }
-            
-            logger.info(f"파일 업로드 시작: {display_name} ({len(file_content)/1024/1024:.2f} MB)")
-            
-            try:
+            # 실제 파일 객체 사용 (BytesIO 대신)
+            # Content-Type이 자동으로 올바르게 설정됨
+            with open(file_path, 'rb') as file_obj:
+                # 파일명 속성 추가
+                file_obj.name = display_name
+                
+                # 업로드할 문서 정보
+                doc_info = {
+                    "display_name": display_name,
+                    "blob": file_obj  # 실제 파일 객체로 전달
+                }
+                
                 uploaded_docs = dataset.upload_documents([doc_info])
                 
                 if not uploaded_docs or len(uploaded_docs) == 0:
@@ -176,10 +172,6 @@ class RAGFlowClient:
                     logger.debug(f"메타데이터 (미적용): {metadata}")
                 
                 return True
-            
-            finally:
-                # 스트림 닫기
-                file_stream.close()
         
         except Exception as e:
             logger.error(f"✗ 파일 업로드 실패 ({file_path.name}): {e}")
