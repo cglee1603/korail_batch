@@ -25,7 +25,8 @@ class RAGFlowClient:
         self, 
         name: str, 
         description: str = "",
-        permission: str = "me"
+        permission: str = "me",
+        embedding_model: str = None
     ) -> Optional[object]:
         """
         지식베이스 삭제 후 재생성
@@ -36,6 +37,7 @@ class RAGFlowClient:
             name: 지식베이스 이름
             description: 설명
             permission: 권한 설정 ("me": 나만, "team": 팀 공유)
+            embedding_model: 임베딩 모델 (None이면 시스템 기본값)
         
         Returns:
             Dataset 객체 또는 None

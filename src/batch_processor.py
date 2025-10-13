@@ -7,7 +7,7 @@ from excel_processor import ExcelProcessor
 from file_handler import FileHandler
 from ragflow_client import RAGFlowClient
 from logger import logger
-from config import EXCEL_FILE_PATH, DATASET_PERMISSION
+from config import EXCEL_FILE_PATH, DATASET_PERMISSION, EMBEDDING_MODEL
 
 
 class BatchProcessor:
@@ -86,7 +86,8 @@ class BatchProcessor:
             dataset = self.ragflow_client.get_or_create_dataset(
                 name=dataset_name,
                 description=dataset_description,
-                permission=DATASET_PERMISSION
+                permission=DATASET_PERMISSION,
+                embedding_model=EMBEDDING_MODEL
             )
             
             if not dataset:
