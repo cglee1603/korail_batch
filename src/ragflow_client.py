@@ -109,8 +109,19 @@ class RAGFlowClient:
         
         # 2. 새 지식베이스 생성
         try:
+            # 임베딩 모델 이름 정규화: @Factory 부분 제거
+            # 예: "qwen3-embedding:8b@Custom" -> "qwen3-embedding:8b"
+            normalized_embedding_model = None
+            if embedding_model:
+                if '@' in embedding_model:
+                    # @ 앞부분만 사용 (모델명만 추출)
+                    normalized_embedding_model = embedding_model.split('@')[0]
+                    logger.info(f"임베딩 모델 형식 변환: {embedding_model} -> {normalized_embedding_model}")
+                else:
+                    normalized_embedding_model = embedding_model
+            
             logger.info(f"새 지식베이스 생성: {name}")
-            logger.info(f"  - 임베딩 모델: {embedding_model if embedding_model else '시스템 기본값'}")
+            logger.info(f"  - 임베딩 모델: {normalized_embedding_model if normalized_embedding_model else '시스템 기본값'}")
             logger.info(f"  - 권한: {permission}")
             
             create_payload = {
@@ -121,8 +132,8 @@ class RAGFlowClient:
             if description:
                 create_payload["description"] = description
             
-            if embedding_model:
-                create_payload["embedding_model"] = embedding_model
+            if normalized_embedding_model:
+                create_payload["embedding_model"] = normalized_embedding_model
             
             response = self._make_request(
                 'POST',
