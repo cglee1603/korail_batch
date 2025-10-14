@@ -20,9 +20,9 @@ DATASET_PERMISSION = os.getenv("DATASET_PERMISSION", "me")  # "me" 또는 "team"
 DATASET_LANGUAGE = os.getenv("DATASET_LANGUAGE", "Korean")
 
 # 임베딩 모델 설정
-# RAGFlow UI와 동일한 모델 사용 (주의: @Custom 접미사 제거)
-# 사용 가능한 모델: qwen3-embedding:8b, BAAI/bge-large-zh-v1.5, BAAI/bge-small-zh-v1.5
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+# None으로 설정하여 tenant의 기본 임베딩 모델(tenant.embd_id) 자동 사용
+# .env의 EMBEDDING_MODEL 설정은 무시됨 (서버측 tenant_llm 테이블 조회 문제 회피)
+EMBEDDING_MODEL = None  # 항상 None 사용 - 서버가 tenant.embd_id 자동 적용
 
 # 파일 경로 설정
 EXCEL_FILE_PATH = os.getenv("EXCEL_FILE_PATH", "./data/input.xlsx")
