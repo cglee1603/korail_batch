@@ -87,7 +87,7 @@ class BatchProcessor:
                 name=dataset_name,
                 description=dataset_description,
                 permission=DATASET_PERMISSION,
-                embedding_model=EMBEDDING_MODEL
+                embedding_model=None  # 시스템 기본값 사용 (tenant.embd_id)
             )
             
             if not dataset:
