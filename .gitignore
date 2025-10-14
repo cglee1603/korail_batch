@@ -37,6 +37,9 @@ venv/
 ENV/
 env/
 
+# 라이브러리 설치파일
+rag_batch_offline/
+
 # IDE
 .vscode/
 .idea/
