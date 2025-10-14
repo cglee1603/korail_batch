@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 from excel_processor import ExcelProcessor
 from file_handler import FileHandler
-from ragflow_client import RAGFlowClient
+from ragflow_client import RAGFlowClient  # HTTP API 클라이언트
 from logger import logger
 from config import EXCEL_FILE_PATH, DATASET_PERMISSION, EMBEDDING_MODEL
 

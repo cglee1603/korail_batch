@@ -1,8 +1,8 @@
 # RAGFlow Batch 프로그램 필수 패키지
 # Python 3.11.9+
 
-# RAGFlow SDK
-ragflow-sdk>=0.5.0
+# HTTP 클라이언트 (SDK 대신 직접 API 호출)
+# ragflow-sdk>=0.5.0  # 더 이상 사용하지 않음
 
 # HTTP 클라이언트
 requests>=2.31.0
