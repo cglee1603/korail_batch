@@ -30,3 +30,22 @@ chardet>=5.2.0
 
 # 날짜/시간 처리
 python-dateutil>=2.8.2
+
+# ==================== 데이터베이스 연동 (선택) ====================
+# 기본: SQLAlchemy (범용 DB 연결)
+sqlalchemy>=2.0.0
+
+# PostgreSQL 드라이버 (PostgreSQL 사용 시)
+psycopg2-binary>=2.9.9; platform_system!="Windows"
+psycopg2>=2.9.9; platform_system=="Windows"
+
+# MySQL 드라이버 (MySQL/MariaDB 사용 시)
+pymysql>=1.1.0
+
+# MSSQL 드라이버 (SQL Server 사용 시)
+pyodbc>=5.0.0; platform_system=="Windows"
+
+# Oracle 드라이버 (Oracle DB 사용 시)
+# cx_oracle>=8.3.0
+
+# SQLite는 Python 기본 내장

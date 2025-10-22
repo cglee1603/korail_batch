@@ -112,15 +112,30 @@ class FileHandler:
         """
         HWP 파일을 PDF로 변환
         
+        Windows: 한글 프로그램 COM 우선 시도 → 실패 시 LibreOffice
         Linux: LibreOffice 사용
-        Windows: LibreOffice 또는 한글 오피스 COM 사용
         """
         try:
+            import platform
+            
             pdf_path = hwp_path.with_suffix('.pdf')
             
             logger.info(f"HWP->PDF 변환 시작: {hwp_path}")
             
-            # LibreOffice 사용 (Linux/Windows 모두 지원)
+            result = False
+            
+            # Windows에서 한글 프로그램 우선 시도
+            if platform.system() == 'Windows':
+                logger.info("Windows 환경 감지 - 한글 프로그램으로 변환 시도")
+                result = self._convert_with_hwp_com(hwp_path, pdf_path)
+                
+                if result:
+                    logger.info(f"한글 프로그램으로 변환 완료: {pdf_path}")
+                    return pdf_path
+                else:
+                    logger.warning("한글 프로그램 변환 실패 - LibreOffice로 재시도")
+            
+            # 한글 프로그램 실패 또는 Linux인 경우 LibreOffice 사용
             result = self._convert_with_libreoffice(hwp_path, pdf_path)
             
             if result:
@@ -135,6 +150,77 @@ class FileHandler:
         except Exception as e:
             logger.error(f"HWP->PDF 변환 실패 ({hwp_path}): {e}")
             return hwp_path  # 원본 반환
+    
+    def _convert_with_hwp_com(self, hwp_path: Path, pdf_path: Path) -> bool:
+        """
+        Windows 한글 프로그램 COM을 사용한 HWP → PDF 변환
+        
+        Args:
+            hwp_path: 원본 HWP 파일 경로
+            pdf_path: 출력 PDF 파일 경로
+        
+        Returns:
+            변환 성공 여부
+        """
+        try:
+            # pywin32 패키지 필요
+            import win32com.client
+            import pythoncom
+            
+            logger.info("한글 프로그램 COM 초기화 시작")
+            
+            # COM 초기화
+            pythoncom.CoInitialize()
+            
+            try:
+                # 한글 프로그램 COM 객체 생성
+                hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+                
+                # HWP 파일 열기
+                abs_hwp_path = str(hwp_path.resolve())
+                logger.info(f"HWP 파일 열기: {abs_hwp_path}")
+                
+                # Open 메서드: path, format, arg
+                result = hwp.Open(abs_hwp_path, "HWP", "")
+                
+                if not result:
+                    logger.error("HWP 파일 열기 실패")
+                    hwp.Quit()
+                    return False
+                
+                # PDF로 저장
+                abs_pdf_path = str(pdf_path.resolve())
+                logger.info(f"PDF로 저장: {abs_pdf_path}")
+                
+                # SaveAs 메서드: path, format, arg
+                # PDF 포맷 코드: "PDF"
+                hwp.SaveAs(abs_pdf_path, "PDF", "")
+                
+                # 한글 프로그램 종료
+                hwp.Quit()
+                
+                # PDF 파일 생성 확인
+                if pdf_path.exists():
+                    logger.info(f"한글 프로그램으로 PDF 변환 성공: {pdf_path}")
+                    return True
+                else:
+                    logger.error(f"PDF 파일이 생성되지 않았습니다: {pdf_path}")
+                    return False
+            
+            finally:
+                # COM 정리
+                pythoncom.CoUninitialize()
+        
+        except ImportError:
+            logger.warning("pywin32 패키지가 설치되지 않았습니다.")
+            logger.warning("설치 방법: pip install pywin32")
+            return False
+        
+        except Exception as e:
+            logger.error(f"한글 프로그램 COM 변환 중 오류: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return False
     
     def _convert_with_libreoffice(self, hwp_path: Path, pdf_path: Path) -> bool:
         """

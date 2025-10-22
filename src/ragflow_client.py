@@ -49,7 +49,9 @@ class RAGFlowClient:
         name: str, 
         description: str = "",
         permission: str = "me",
-        embedding_model: str = None
+        embedding_model: str = None,
+        chunk_method: str = "naive",
+        parser_config: Dict = None
     ) -> Optional[Dict]:
         """
         지식베이스 삭제 후 재생성 (HTTP API 사용)
@@ -59,6 +61,8 @@ class RAGFlowClient:
             description: 설명
             permission: 권한 설정 ("me": 나만, "team": 팀 공유)
             embedding_model: 임베딩 모델 (None이면 시스템 기본값)
+            chunk_method: 청크 분할 방법 (기본: "naive")
+            parser_config: Parser 설정 (GUI와 동일한 설정)
         
         Returns:
             Dataset 딕셔너리 또는 None
@@ -112,10 +116,14 @@ class RAGFlowClient:
             logger.info(f"새 지식베이스 생성: {name}")
             logger.info(f"  - 임베딩 모델: {embedding_model if embedding_model else '시스템 기본값 (tenant 설정)'}")
             logger.info(f"  - 권한: {permission}")
+            logger.info(f"  - 청크 방법: {chunk_method}")
+            if parser_config:
+                logger.info(f"  - Parser 설정: {parser_config}")
             
             create_payload = {
                 "name": name,
-                "permission": permission
+                "permission": permission,
+                "chunk_method": chunk_method
             }
             
             if description:
@@ -125,6 +133,10 @@ class RAGFlowClient:
             # None이면 서버에서 tenant.embd_id를 사용함
             if embedding_model:
                 create_payload["embedding_model"] = embedding_model
+            
+            # parser_config가 있으면 전달 (GUI와 동일한 설정)
+            if parser_config:
+                create_payload["parser_config"] = parser_config
             
             response = self._make_request(
                 'POST',

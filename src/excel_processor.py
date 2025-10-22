@@ -124,10 +124,15 @@ class ExcelProcessor:
         return headers
     
     def is_row_hidden(self, sheet: Worksheet, row_idx: int) -> bool:
-        """행이 숨겨져 있는지 확인"""
+        """행이 숨겨져 있거나 높이가 0인지 확인"""
         try:
             row_dimension = sheet.row_dimensions[row_idx]
-            return row_dimension.hidden
+            # 숨김 처리되었거나 높이가 0인 경우
+            if row_dimension.hidden:
+                return True
+            if row_dimension.height is not None and row_dimension.height == 0:
+                return True
+            return False
         except:
             return False
     
@@ -183,9 +188,9 @@ class ExcelProcessor:
         
         # 데이터 행 처리
         for row_idx in range(data_start_row, sheet.max_row + 1):
-            # 숨겨진 행 제외
+            # 숨겨진 행 또는 높이가 0인 행 제외
             if self.is_row_hidden(sheet, row_idx):
-                logger.debug(f"{row_idx}행은 숨김 처리되어 건너뜁니다.")
+                logger.debug(f"{row_idx}행은 숨김 처리되었거나 높이가 0이어서 건너뜁니다.")
                 continue
             
             row_cells = list(sheet[row_idx])
@@ -230,7 +235,7 @@ class ExcelProcessor:
     
     def process_all_sheets(self) -> Dict[str, List[Dict]]:
         """
-        모든 시트 처리
+        모든 시트 처리 (숨겨진 시트 제외)
         
         Returns:
             Dict[str, List[Dict]]: {
@@ -249,6 +254,13 @@ class ExcelProcessor:
         
         for sheet_name in sheet_names:
             try:
+                sheet = self.workbook[sheet_name]
+                
+                # 시트가 숨겨져 있는지 확인
+                if sheet.sheet_state == 'hidden' or sheet.sheet_state == 'veryHidden':
+                    logger.info(f"시트 '{sheet_name}'는 숨김 처리되어 건너뜁니다.")
+                    continue
+                
                 results = self.process_sheet(sheet_name)
                 all_results[sheet_name] = results
             except Exception as e:

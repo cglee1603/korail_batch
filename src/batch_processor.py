@@ -2,20 +2,46 @@
 배치 프로세서 - 전체 프로세스 조율
 """
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from excel_processor import ExcelProcessor
 from file_handler import FileHandler
 from ragflow_client import RAGFlowClient  # HTTP API 클라이언트
 from logger import logger
-from config import EXCEL_FILE_PATH, DATASET_PERMISSION, EMBEDDING_MODEL
+from config import (
+    EXCEL_FILE_PATH, 
+    DATASET_PERMISSION, 
+    EMBEDDING_MODEL,
+    DATA_SOURCE,
+    DB_CONNECTION_STRING,
+    CHUNK_METHOD,
+    PARSER_CONFIG
+)
 
 
 class BatchProcessor:
     """배치 처리 메인 클래스"""
     
-    def __init__(self, excel_path: str = None):
+    def __init__(self, excel_path: str = None, data_source: str = None):
+        """
+        Args:
+            excel_path: 엑셀 파일 경로
+            data_source: 데이터 소스 ("excel", "db", "both")
+        """
         self.excel_path = excel_path or EXCEL_FILE_PATH
-        self.excel_processor = ExcelProcessor(self.excel_path)
+        self.data_source = data_source or DATA_SOURCE
+        
+        # 프로세서 초기화
+        self.excel_processor = None
+        self.db_processor = None
+        
+        # Excel 소스
+        if self.data_source in ['excel', 'both']:
+            self.excel_processor = ExcelProcessor(self.excel_path)
+        
+        # DB 소스
+        if self.data_source in ['db', 'both']:
+            self._init_db_processor()
+        
         self.file_handler = FileHandler()
         self.ragflow_client = RAGFlowClient()
         
@@ -27,30 +53,69 @@ class BatchProcessor:
             'datasets_created': 0
         }
     
+    def _init_db_processor(self):
+        """DB 프로세서 초기화"""
+        try:
+            from db_connector import DBConnector
+            from db_processor import DBProcessor
+            
+            # DB 연결 문자열 확인
+            if not DB_CONNECTION_STRING:
+                logger.warning("DB 연결 문자열이 설정되지 않았습니다. DB 처리를 건너뜁니다.")
+                self.data_source = 'excel'  # 강제로 Excel만 처리
+                return
+            
+            connector = DBConnector(connection_string=DB_CONNECTION_STRING)
+            self.db_processor = DBProcessor(connector)
+            logger.info(f"DB 프로세서 초기화 완료")
+        
+        except ImportError as e:
+            logger.error(f"DB 모듈 import 실패: {e}")
+            logger.error("필요한 패키지를 설치하세요: pip install sqlalchemy psycopg2-binary pymysql")
+            self.data_source = 'excel'
+        except Exception as e:
+            logger.error(f"DB 프로세서 초기화 실패: {e}")
+            self.data_source = 'excel'
+    
     def process(self):
         """배치 프로세스 실행"""
         logger.info("="*80)
         logger.info("배치 프로세스 시작")
-        logger.info(f"엑셀 파일: {self.excel_path}")
+        logger.info(f"데이터 소스: {self.data_source.upper()}")
+        if self.data_source in ['excel', 'both']:
+            logger.info(f"엑셀 파일: {self.excel_path}")
         logger.info("="*80)
         
         try:
-            # 1. 엑셀 파일에서 데이터 추출
-            sheet_data = self.excel_processor.process_all_sheets()
-            self.stats['total_sheets'] = len(sheet_data)
+            # 데이터 수집
+            all_data = {}
             
-            if not sheet_data:
+            # 1. Excel 데이터 추출
+            if self.data_source in ['excel', 'both'] and self.excel_processor:
+                logger.info("\n[Excel 데이터 처리]")
+                sheet_data = self.excel_processor.process_all_sheets()
+                all_data.update(sheet_data)
+                self.stats['total_sheets'] += len(sheet_data)
+            
+            # 2. DB 데이터 추출
+            if self.data_source in ['db', 'both'] and self.db_processor:
+                logger.info("\n[DB 데이터 처리]")
+                db_data = self.db_processor.process(query_name="DB_Query")
+                all_data.update(db_data)
+                self.stats['total_sheets'] += len(db_data)
+            
+            if not all_data:
                 logger.error("처리할 데이터가 없습니다.")
                 return
             
-            # 2. 시트별로 처리
-            for sheet_name, items in sheet_data.items():
-                self.process_sheet(sheet_name, items)
+            # 3. 시트/쿼리별로 처리
+            for dataset_name, items in all_data.items():
+                self.process_sheet(dataset_name, items)
             
-            # 3. 임시 파일 정리
+            # 4. 임시 파일 정리
             self.file_handler.cleanup_temp()
             
-            # 4. 통계 출력
+            # 5. 통계 출력
             self.print_statistics()
         
         except Exception as e:
@@ -59,7 +124,12 @@ class BatchProcessor:
             logger.error(traceback.format_exc())
         
         finally:
-            self.excel_processor.close()
+            # 리소스 정리
+            if self.excel_processor:
+                self.excel_processor.close()
+            if self.db_processor and self.db_processor.connector:
+                self.db_processor.connector.close()
+            
             logger.info("="*80)
             logger.info("배치 프로세스 종료")
             logger.info("="*80)
@@ -87,7 +157,9 @@ class BatchProcessor:
                 name=dataset_name,
                 description=dataset_description,
                 permission=DATASET_PERMISSION,
-                embedding_model=None  # 시스템 기본값 사용 (tenant.embd_id)
+                embedding_model=None,  # 시스템 기본값 사용 (tenant.embd_id)
+                chunk_method=CHUNK_METHOD,  # GUI와 동일한 청크 방법
+                parser_config=PARSER_CONFIG  # GUI와 동일한 파서 설정
             )
             
             if not dataset:

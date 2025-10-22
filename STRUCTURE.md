@@ -11,6 +11,8 @@ rag_batch/
 │   ├── config.py                    # 설정 관리 (환경변수, 경로)
 │   ├── logger.py                    # 로깅 시스템
 │   ├── excel_processor.py           # 엑셀 파일 처리
+│   ├── db_connector.py              # 🆕 데이터베이스 연결
+│   ├── db_processor.py              # 🆕 DB 쿼리 결과 처리
 │   ├── file_handler.py              # 파일 다운로드/변환
 │   ├── ragflow_client.py            # RAGFlow API 클라이언트
 │   └── batch_processor.py           # 배치 프로세스 조율
@@ -84,6 +86,25 @@ rag_batch/
   - 메타데이터 추출
 - **의존성**: openpyxl
 
+#### db_connector.py (신규)
+- **역할**: 데이터베이스 연결 및 쿼리 실행
+- **기능**:
+  - SQLAlchemy 기반 범용 DB 연결
+  - PostgreSQL, MySQL, MSSQL, Oracle, SQLite 지원
+  - SQL 파일 읽기 및 실행
+  - 연결 문자열/개별 파라미터 지원
+- **의존성**: sqlalchemy, psycopg2, pymysql, pyodbc
+
+#### db_processor.py (신규)
+- **역할**: DB 쿼리 결과를 RAGFlow 형식으로 변환
+- **기능**:
+  - SQL 파일 실행 및 결과 처리
+  - 파일 경로 추출 (방식 A)
+  - 텍스트 내용 파일 변환 (방식 B)
+  - 메타데이터 추출 및 매핑
+  - Excel 프로세서와 동일한 출력 형식
+- **의존성**: db_connector
+
 #### file_handler.py
 - **역할**: 파일 다운로드 및 변환
 - **기능**:
@@ -104,8 +125,9 @@ rag_batch/
 #### batch_processor.py
 - **역할**: 전체 프로세스 조율
 - **기능**:
-  - 엑셀 → 파일 → RAGFlow 전체 플로우 관리
-  - 시트별 처리
+  - Excel/DB → 파일 → RAGFlow 전체 플로우 관리
+  - 데이터 소스 선택 (excel, db, both)
+  - 시트/쿼리별 처리
   - 통계 수집 및 출력
 - **의존성**: 위 모든 모듈
 
@@ -165,6 +187,7 @@ python -m src.main --once
 
 ## 데이터 흐름
 
+### Excel 모드
 ```
 1. run.py
    ↓
@@ -179,6 +202,30 @@ python -m src.main --once
 6. src/ragflow_client.py (RAGFlow 업로드)
    ↓
 7. src/logger.py (로그 기록)
+```
+
+### DB 모드 (신규)
+```
+1. run.py
+   ↓
+2. src/main.py (--source db)
+   ↓
+3. src/batch_processor.py (전체 조율)
+   ↓
+4. src/db_connector.py (DB 연결)
+   ↓
+5. src/db_processor.py (쿼리 실행 및 결과 변환)
+   ↓
+6. src/file_handler.py (파일 처리)
+   ↓
+7. src/ragflow_client.py (RAGFlow 업로드)
+   ↓
+8. src/logger.py (로그 기록)
+```
+
+### 혼합 모드 (Both)
+```
+Excel 처리 + DB 처리 → 통합 업로드
 ```
 
 ## 설정 파일
@@ -196,15 +243,18 @@ BATCH_SCHEDULE=10:00
 
 ### requirements.txt
 ```
+# 기본 패키지
 openpyxl>=3.1.2
-ragflow-sdk>=0.8.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-PyPDF2>=3.0.1
-pillow>=10.0.0
-olefile>=0.46
-hwp5>=0.1.0
 schedule>=1.2.0
+colorlog>=6.7.0
+
+# DB 연동 (선택)
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9  # PostgreSQL
+pymysql>=1.1.0          # MySQL
+pyodbc>=5.0.0           # MSSQL
 ```
 
 ## 확장 방법
@@ -213,7 +263,13 @@ schedule>=1.2.0
 `src/file_handler.py`의 `process_file()` 메서드 수정
 
 ### 새로운 데이터 소스 지원
-`src/excel_processor.py` 참고하여 새로운 프로세서 작성
+- Excel: `src/excel_processor.py` 참고
+- DB: `src/db_processor.py` 참고하여 새로운 프로세서 작성
+- 반드시 동일한 출력 형식 유지: `{'hyperlink': ..., 'metadata': ..., 'row_number': ...}`
+
+### 새로운 데이터베이스 지원
+- `src/db_connector.py`의 `SUPPORTED_DATABASES`에 추가
+- SQLAlchemy 연결 문자열 형식 확인
 
 ### 새로운 출력 대상 지원
 `src/ragflow_client.py` 참고하여 새로운 클라이언트 작성

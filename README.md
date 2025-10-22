@@ -1,6 +1,12 @@
 # RAGFlow Plus 배치 프로그램
 
-엑셀 파일에서 하이퍼링크를 자동으로 추출하여 RAGFlow Plus 지식베이스에 문서를 업로드하고 인덱싱하는 배치 프로그램입니다.
+Excel 파일과 데이터베이스에서 자동으로 데이터를 추출하여 RAGFlow Plus 지식베이스에 문서를 업로드하고 인덱싱하는 배치 프로그램입니다.
+
+## 🆕 주요 업데이트
+
+- **✨ 데이터베이스 통합** - PostgreSQL, MySQL, MSSQL, Oracle, SQLite 지원
+- **🔄 SQL 파일 기반 쿼리** - 동적 쿼리 수정 가능
+- **📊 Excel + DB 혼합 사용** - 두 데이터 소스 동시 처리
 
 ## 📋 프로젝트 구조
 
@@ -25,6 +31,8 @@ rag_batch/
 │
 ├── docs/                        # 문서
 │   ├── QUICK_START.md           # 빠른 시작 가이드
+│   ├── DATABASE_INTEGRATION.md  # 🆕 DB 통합 가이드
+│   ├── DB_QUICK_START.md        # 🆕 DB 빠른 시작
 │   ├── EXAMPLES.md              # 사용 예시 (10가지)
 │   ├── TROUBLESHOOTING.md       # 문제 해결 (21가지)
 │   ├── IMPLEMENTATION_NOTE.md   # 구현 노트
@@ -66,14 +74,29 @@ python run.py --once
 
 ## 📚 상세 문서
 
-- **[전체 프로세스](PROCESS.md)** - 🆕 팀 공유, 문서 업로드/파싱 등 전체 프로세스 설명
+### Excel 사용자
 - **[빠른 시작](docs/QUICK_START.md)** - 처음 시작하는 분들을 위한 가이드
+- **[전체 프로세스](PROCESS.md)** - 팀 공유, 문서 업로드/파싱 등 전체 프로세스 설명
 - **[사용 예시](docs/EXAMPLES.md)** - 10가지 실제 사용 예시
+
+### 데이터베이스 통합 (신규)
+- **[DB 빠른 시작](docs/DB_QUICK_START.md)** - 🆕 5분 안에 DB 통합하기
+- **[DB 통합 가이드](docs/DATABASE_INTEGRATION.md)** - 🆕 상세 DB 연동 문서
+
+### 일반
 - **[문제 해결](docs/TROUBLESHOOTING.md)** - 21가지 문제 해결 방법
 - **[구현 노트](docs/IMPLEMENTATION_NOTE.md)** - 메타데이터 등 상세 구현 정보
 - **[변경 이력](docs/CHANGELOG.md)** - 버전별 변경 사항
 
 ## ✨ 주요 기능
+
+### 데이터 소스
+- ✅ **Excel 파일** - 하이퍼링크 기반 문서 수집
+- ✅ **데이터베이스** - SQL 쿼리 기반 데이터 수집 🆕
+  - PostgreSQL, MySQL, MSSQL, Oracle, SQLite 지원
+  - SQL 파일로 쿼리 관리
+  - 파일 경로 또는 텍스트 내용 처리
+- ✅ **혼합 모드** - Excel + DB 동시 사용
 
 ### 엑셀 파일 처리
 - ✅ 다중 시트 자동 처리
@@ -103,24 +126,36 @@ python run.py --once
 
 ## 💡 사용 방법
 
-### 기본 실행
+### Excel 사용
 ```powershell
+# 기본 실행 (Excel 파일 처리)
 python run.py --once
-```
 
-### 특정 파일 지정
-```powershell
+# 특정 파일 지정
 python run.py --once --excel "C:\path\to\file.xlsx"
-```
 
-### 스케줄 실행
-```powershell
-# 매일 10시
+# 스케줄 실행
 python run.py --schedule "10:00"
-
-# 5분마다
-python run.py --schedule "300"
 ```
+
+### 데이터베이스 사용 🆕
+```powershell
+# DB만 사용
+python run.py --once --source db
+
+# Excel + DB 혼합
+python run.py --once --source both
+```
+
+**DB 설정 예시 (.env 파일):**
+```env
+DATA_SOURCE=db
+DB_CONNECTION_STRING=postgresql://user:pass@localhost:5432/mydb
+DB_SQL_FILE_PATH=./data/query.sql
+DB_FILE_PATH_COLUMN=file_path
+```
+
+**더 자세한 내용:** [DB 빠른 시작](docs/DB_QUICK_START.md)
 
 ### Windows 시작 스크립트
 ```powershell
