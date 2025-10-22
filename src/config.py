@@ -56,9 +56,17 @@ PARSER_CONFIG = {
     # Excel HTML 변환 사용 여부
     "html4excel": os.getenv("HTML4EXCEL", "false").lower() == "true",
     
-    # Raptor 설정 (계층적 요약)
+    # Raptor 설정 (계층적 요약 - Recursive Abstractive Processing for Tree-Organized Retrieval)
+    # ⚠️  Raptor는 처리 시간이 매우 길어질 수 있으므로 필요한 경우에만 활성화하세요
     "raptor": {
-        "use_raptor": os.getenv("USE_RAPTOR", "false").lower() == "true"
+        "use_raptor": os.getenv("USE_RAPTOR", "false").lower() == "true",
+        # 아래 설정들은 use_raptor=true일 때만 사용됨
+        "prompt": os.getenv("RAPTOR_PROMPT", 
+            "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n{cluster_content}\nThe above is the content you need to summarize."),
+        "max_token": int(os.getenv("RAPTOR_MAX_TOKEN", "256")),
+        "threshold": float(os.getenv("RAPTOR_THRESHOLD", "0.1")),
+        "random_seed": int(os.getenv("RAPTOR_RANDOM_SEED", "0")),
+        "max_cluster": int(os.getenv("RAPTOR_MAX_CLUSTER", "64"))
     }
 }
 
