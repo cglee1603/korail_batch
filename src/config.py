@@ -50,36 +50,37 @@ def get_delimiter():
         delimiter = "\n!?;。；！？"
     return delimiter
 
-# Parser 설정 (GUI 기본값과 동일)
+# Parser 설정 (GUI 기본값과 완전히 동일)
 PARSER_CONFIG = {
-    # 청크당 토큰 수 (기본: 128)
-    "chunk_token_num": int(os.getenv("CHUNK_TOKEN_NUM", "128")),
-    
-    # 구분자 (기본: 줄바꿈, 문장 종결 기호)
-    "delimiter": get_delimiter(),
-    
-    # 페이지 범위 (기본: 전체 페이지)
-    "pages": [[1, 1000000]],
-    
     # 레이아웃 인식 방법 (기본: MinerU)
     # - "DeepDOC": DeepDOC 모델 (구버전)
     # - "MinerU": MinerU 모델 (권장)
     "layout_recognize": os.getenv("LAYOUT_RECOGNIZE", "MinerU"),
     
+    # 청크당 토큰 수 (기본: 512 - GUI 기본값)
+    "chunk_token_num": int(os.getenv("CHUNK_TOKEN_NUM", "512")),
+    
+    # 구분자 (기본: 줄바꿈, 문장 종결 기호)
+    "delimiter": get_delimiter(),
+    
+    # 자동 키워드 추출 (0: 비활성화, N: N개 키워드 추출)
+    "auto_keywords": int(os.getenv("AUTO_KEYWORDS", "0")),
+    
+    # 자동 질문 생성 (0: 비활성화, N: N개 질문 생성)
+    "auto_questions": int(os.getenv("AUTO_QUESTIONS", "0")),
+    
     # Excel HTML 변환 사용 여부
     "html4excel": os.getenv("HTML4EXCEL", "false").lower() == "true",
     
-    # Raptor 설정 (계층적 요약 - Recursive Abstractive Processing for Tree-Organized Retrieval)
-    # ⚠️  Raptor는 처리 시간이 매우 길어질 수 있으므로 필요한 경우에만 활성화하세요
+    # Raptor 설정 (계층적 요약)
+    # ⚠️ GUI와 동일한 단순 구조 사용
     "raptor": {
-        "use_raptor": os.getenv("USE_RAPTOR", "false").lower() == "true",
-        # 아래 설정들은 use_raptor=true일 때만 사용됨
-        "prompt": os.getenv("RAPTOR_PROMPT", 
-            "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n{cluster_content}\nThe above is the content you need to summarize."),
-        "max_token": int(os.getenv("RAPTOR_MAX_TOKEN", "256")),
-        "threshold": float(os.getenv("RAPTOR_THRESHOLD", "0.1")),
-        "random_seed": int(os.getenv("RAPTOR_RANDOM_SEED", "0")),
-        "max_cluster": int(os.getenv("RAPTOR_MAX_CLUSTER", "64"))
+        "use_raptor": os.getenv("USE_RAPTOR", "false").lower() == "true"
+    },
+    
+    # GraphRAG 설정 (그래프 기반 RAG)
+    "graphrag": {
+        "use_graphrag": os.getenv("USE_GRAPHRAG", "false").lower() == "true"
     }
 }
 
