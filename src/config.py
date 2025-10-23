@@ -37,13 +37,26 @@ EMBEDDING_MODEL = None  # 항상 None 사용 - 서버가 tenant.embd_id 자동 �
 # - "knowledge_graph": 지식 그래프
 CHUNK_METHOD = os.getenv("CHUNK_METHOD", "naive")
 
+# Delimiter 처리 헬퍼 함수
+def get_delimiter():
+    """환경변수에서 delimiter를 읽어 올바르게 처리"""
+    delimiter = os.getenv("DELIMITER")
+    if delimiter:
+        # 환경변수에서 읽은 경우 이스케이프 시퀀스 처리
+        # \\n 문자열을 실제 줄바꿈 문자로 변환
+        delimiter = delimiter.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
+    else:
+        # 기본값: 실제 줄바꿈 문자 사용
+        delimiter = "\n!?;。；！？"
+    return delimiter
+
 # Parser 설정 (GUI 기본값과 동일)
 PARSER_CONFIG = {
     # 청크당 토큰 수 (기본: 128)
     "chunk_token_num": int(os.getenv("CHUNK_TOKEN_NUM", "128")),
     
     # 구분자 (기본: 줄바꿈, 문장 종결 기호)
-    "delimiter": os.getenv("DELIMITER", "\\n!?;。；！？"),
+    "delimiter": get_delimiter(),
     
     # 페이지 범위 (기본: 전체 페이지)
     "pages": [[1, 1000000]],
