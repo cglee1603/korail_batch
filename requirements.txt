@@ -1,51 +1,54 @@
-# RAGFlow Batch 프로그램 필수 패키지
+# RAGFlow Batch Required Packages
 # Python 3.11.9+
 
-# HTTP 클라이언트 (SDK 대신 직접 API 호출)
-# ragflow-sdk>=0.5.0  # 더 이상 사용하지 않음
+# HTTP Client (Direct API calls instead of SDK)
+# ragflow-sdk>=0.5.0  # No longer used
 
-# HTTP 클라이언트
+# HTTP Client
 requests>=2.31.0
 urllib3>=2.0.0
 certifi>=2023.7.22
 
-# 환경 변수 관리
+# Environment Variables
 python-dotenv>=1.0.0
 
-# Excel 처리
+# Excel Processing
 openpyxl>=3.1.0
 et-xmlfile>=1.1.0
 
-# 스케줄링
+# Scheduling
 schedule>=1.2.0
 
-# 로깅
+# Logging
 colorlog>=6.7.0
 
-# 파일 타입 감지 (Windows)
+# File Type Detection (Windows)
 python-magic-bin>=0.4.14; platform_system=="Windows"
 
-# 문자 인코딩 감지
+# HWP to PDF Conversion (Windows, Hangul Program COM)
+pywin32>=306; platform_system=="Windows"
+
+# Character Encoding Detection
 chardet>=5.2.0
 
-# 날짜/시간 처리
+# Date/Time Processing
 python-dateutil>=2.8.2
 
-# ==================== 데이터베이스 연동 (선택) ====================
-# 기본: SQLAlchemy (범용 DB 연결)
+# ==================== Database Drivers (Optional) ====================
+# Base: SQLAlchemy (Universal DB Connection)
 sqlalchemy>=2.0.0
 
-# PostgreSQL 드라이버 (PostgreSQL 사용 시)
+# PostgreSQL Driver
 psycopg2-binary>=2.9.9; platform_system!="Windows"
 psycopg2>=2.9.9; platform_system=="Windows"
 
-# MySQL 드라이버 (MySQL/MariaDB 사용 시)
+# MySQL Driver
 pymysql>=1.1.0
 
-# MSSQL 드라이버 (SQL Server 사용 시)
+# MSSQL Driver (Windows)
 pyodbc>=5.0.0; platform_system=="Windows"
 
-# Oracle 드라이버 (Oracle DB 사용 시)
+# Oracle Driver (Uncomment if needed)
 # cx_oracle>=8.3.0
 
-# SQLite는 Python 기본 내장
+# SQLite is built-in to Python

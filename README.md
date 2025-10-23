@@ -83,6 +83,11 @@ python run.py --once
 - **[DB 빠른 시작](docs/DB_QUICK_START.md)** - 🆕 5분 안에 DB 통합하기
 - **[DB 통합 가이드](docs/DATABASE_INTEGRATION.md)** - 🆕 상세 DB 연동 문서
 
+### 폐쇄망 설치
+- **[플랫폼별 가이드](OFFLINE_PLATFORM_GUIDE.md)** - 🆕 Windows/Linux 환경별 설치 (권장)
+- **[빠른 설치 가이드](OFFLINE_INSTALL_QUICK.md)** - Python 3.11 폐쇄망 설치 (간단)
+- **[상세 설치 가이드](docs/OFFLINE_INSTALL.md)** - 오프라인 설치 전체 과정
+
 ### 일반
 - **[문제 해결](docs/TROUBLESHOOTING.md)** - 21가지 문제 해결 방법
 - **[구현 노트](docs/IMPLEMENTATION_NOTE.md)** - 메타데이터 등 상세 구현 정보

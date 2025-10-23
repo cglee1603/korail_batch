@@ -39,6 +39,7 @@ env/
 
 # 라이브러리 설치파일
 rag_batch_offline/
+rag_batch_offline_windows/
 
 # IDE
 .vscode/
@@ -51,3 +52,21 @@ rag_batch_offline/
 .DS_Store
 Thumbs.db
 
+rag_batch_offline_windows/packages/colorlog-6.10.1-py3-none-any.whl
+rag_batch_offline_windows/packages/et_xmlfile-2.0.0-py3-none-any.whl
+rag_batch_offline_windows/packages/greenlet-3.2.4-cp311-cp311-win_amd64.whl
+rag_batch_offline_windows/packages/idna-3.11-py3-none-any.whl
+rag_batch_offline_windows/packages/openpyxl-3.1.5-py2.py3-none-any.whl
+rag_batch_offline_windows/packages/psycopg2-2.9.11-cp311-cp311-win_amd64.whl
+rag_batch_offline_windows/packages/pymysql-1.1.2-py3-none-any.whl
+rag_batch_offline_windows/packages/pyodbc-5.3.0-cp311-cp311-win_amd64.whl
+rag_batch_offline_windows/packages/python_dateutil-2.9.0.post0-py2.py3-none-any.whl
+rag_batch_offline_windows/packages/python_dotenv-1.1.1-py3-none-any.whl
+rag_batch_offline_windows/packages/python_magic_bin-0.4.14-py2.py3-none-win_amd64.whl
+rag_batch_offline_windows/packages/pywin32-311-cp311-cp311-win_amd64.whl
+rag_batch_offline_windows/packages/requests-2.32.5-py3-none-any.whl
+rag_batch_offline_windows/packages/schedule-1.2.2-py3-none-any.whl
+rag_batch_offline_windows/packages/six-1.17.0-py2.py3-none-any.whl
+rag_batch_offline_windows/packages/sqlalchemy-2.0.44-cp311-cp311-win_amd64.whl
+rag_batch_offline_windows/packages/typing_extensions-4.15.0-py3-none-any.whl
+rag_batch_offline_windows/packages/urllib3-2.5.0-py3-none-any.whl

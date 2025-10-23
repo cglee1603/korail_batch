@@ -1,0 +1,48 @@
+# RAGFlow Batch 프로그램 최소 필수 패키지
+# Python 3.11+
+
+# ==================== 필수 라이브러리 ====================
+
+# HTTP 클라이언트
+requests>=2.31.0
+
+# 환경 변수 관리
+python-dotenv>=1.0.0
+
+# Excel 처리
+openpyxl>=3.1.0
+
+# 스케줄링
+schedule>=1.2.0
+
+# HWP → PDF 변환 (Windows, 한글 프로그램 COM 사용, 선택)
+pywin32>=306; platform_system=="Windows"
+
+# ==================== 데이터베이스 연동 ====================
+
+# 기본: SQLAlchemy (범용 DB 연결)
+sqlalchemy>=2.0.0
+
+# PostgreSQL 드라이버 (PostgreSQL 사용 시)
+psycopg2>=2.9.9; platform_system=="Windows"
+psycopg2-binary>=2.9.9; platform_system!="Windows"
+
+# MySQL 드라이버 (MySQL/MariaDB 사용 시)
+pymysql>=1.1.0
+
+# MSSQL 드라이버 (SQL Server 사용 시, Windows만)
+pyodbc>=5.0.0; platform_system=="Windows"
+
+# Oracle 드라이버 (Oracle DB 사용 시)
+# cx_oracle>=8.3.0
+
+# SQLite는 Python 기본 내장
+
+# ==================== 참고 ====================
+# 다음 라이브러리들은 자동으로 의존성으로 설치됩니다:
+# - urllib3 (requests의 의존성)
+# - certifi (requests의 의존성)
+# - charset-normalizer 또는 chardet (requests의 의존성)
+# - et-xmlfile (openpyxl의 의존성)
+# - idna (requests의 의존성)
+
