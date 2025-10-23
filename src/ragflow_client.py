@@ -166,7 +166,8 @@ class RAGFlowClient:
         dataset: Dict, 
         file_path: Path, 
         metadata: Dict[str, str] = None,
-        display_name: str = None
+        display_name: str = None,
+        parser_config: Dict = None
     ) -> bool:
         """
         파일을 지식베이스에 업로드 (HTTP API 직접 사용)
@@ -176,6 +177,7 @@ class RAGFlowClient:
             file_path: 업로드할 파일 경로
             metadata: 메타데이터 (현재 미사용 - MinIO 참조 손상 방지)
             display_name: 표시 이름
+            parser_config: Parser 설정 (업로드 후 문서에 적용)
         
         Returns:
             성공 여부
