@@ -1,6 +1,7 @@
 """
 데이터베이스 쿼리 결과 처리 모듈
 ExcelProcessor와 동일한 형식으로 데이터 변환
+DB 데이터는 history와 유사하게 텍스트를 PDF로 변환하여 업로드
 """
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -19,17 +20,20 @@ from config import (
 class DBProcessor:
     """데이터베이스 결과를 RAGFlow 형식으로 처리"""
     
-    def __init__(self, connector: DBConnector, sql_file_path: str = None):
+    def __init__(self, connector: DBConnector, file_handler=None, sql_file_path: str = None):
         """
         Args:
             connector: DBConnector 인스턴스
+            file_handler: FileHandler 인스턴스 (PDF 변환용, 선택)
             sql_file_path: SQL 파일 경로 (기본값은 config에서 가져옴)
         """
         self.connector = connector
+        self.file_handler = file_handler
         self.sql_file_path = sql_file_path or DB_SQL_FILE_PATH
         self.stats = {
             'total_rows': 0,
             'content_conversions': 0,
+            'pdf_conversions': 0,
             'skipped': 0
         }
     
@@ -109,37 +113,52 @@ class DBProcessor:
     
     def _process_row(self, row: Dict, row_number: int) -> Optional[Dict]:
         """
-        개별 행 처리 (방식 B: DB 내용을 텍스트 파일로 변환)
+        개별 행 처리 (방식 B: DB 내용을 PDF 파일로 변환)
         
         Returns:
             {
-                'hyperlink': '생성된 텍스트 파일 경로',
+                'hyperlink': '생성된 PDF 파일 경로',
                 'metadata': {...},
                 'row_number': 1
             }
         """
         try:
-            # 내용 컬럼이 설정된 경우 - 텍스트 파일 생성
+            # 내용 컬럼이 설정된 경우 - PDF 파일 생성
             if DB_CONTENT_COLUMNS:
                 content = self._build_content(row)
                 if content:
-                    file_path = self._create_text_file(row, content, row_number)
-                    self.stats['content_conversions'] += 1
-                    return {
-                        'hyperlink': str(file_path),
-                        'metadata': self._extract_metadata(row),
-                        'row_number': row_number
-                    }
+                    # FileHandler가 있으면 PDF로 변환, 없으면 텍스트로
+                    if self.file_handler:
+                        file_path = self._create_pdf_file(row, content, row_number)
+                        self.stats['pdf_conversions'] += 1
+                    else:
+                        file_path = self._create_text_file(row, content, row_number)
+                        self.stats['content_conversions'] += 1
+                    
+                    if file_path:
+                        return {
+                            'hyperlink': str(file_path),
+                            'metadata': self._extract_metadata(row),
+                            'row_number': row_number
+                        }
             
-            # 내용 컬럼이 없으면 모든 컬럼을 JSON으로 변환 (폴백)
-            logger.debug(f"{row_number}행: DB_CONTENT_COLUMNS 미설정, JSON 변환")
-            file_path = self._create_json_file(row, row_number)
-            self.stats['content_conversions'] += 1
-            return {
-                'hyperlink': str(file_path),
-                'metadata': self._extract_metadata(row),
-                'row_number': row_number
-            }
+            # 내용 컬럼이 없으면 모든 컬럼을 JSON → PDF로 변환 (폴백)
+            logger.debug(f"{row_number}행: DB_CONTENT_COLUMNS 미설정, JSON → PDF 변환")
+            content = self._build_json_content(row)
+            
+            if self.file_handler:
+                file_path = self._create_pdf_file(row, content, row_number)
+                self.stats['pdf_conversions'] += 1
+            else:
+                file_path = self._create_json_file(row, row_number)
+                self.stats['content_conversions'] += 1
+            
+            if file_path:
+                return {
+                    'hyperlink': str(file_path),
+                    'metadata': self._extract_metadata(row),
+                    'row_number': row_number
+                }
         
         except Exception as e:
             logger.error(f"{row_number}행 처리 실패: {e}")
@@ -244,12 +263,60 @@ class DBProcessor:
         logger.debug(f"JSON 파일 생성: {filename}")
         return file_path
     
+    def _build_json_content(self, row: Dict) -> str:
+        """DB 행을 사람이 읽을 수 있는 텍스트로 변환"""
+        lines = []
+        lines.append("=" * 80)
+        lines.append("데이터베이스 레코드")
+        lines.append("=" * 80)
+        lines.append("")
+        
+        for key, value in row.items():
+            if isinstance(value, datetime):
+                value = value.strftime('%Y-%m-%d %H:%M:%S')
+            elif value is None:
+                value = "(null)"
+            lines.append(f"## {key}")
+            lines.append(str(value))
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    def _create_pdf_file(self, row: Dict, content: str, row_number: int) -> Optional[Path]:
+        """DB 내용을 PDF 파일로 생성 (FileHandler 사용)"""
+        if not self.file_handler:
+            logger.warning(f"{row_number}행: FileHandler가 없어 PDF 변환 불가")
+            return None
+        
+        # 파일명 생성 (첫 번째 컬럼 값 사용 또는 행 번호)
+        first_col = list(row.keys())[0]
+        first_value = str(row[first_col])[:50]  # 최대 50자
+        
+        # 파일명에 사용 불가능한 문자 제거
+        safe_filename = "".join(c for c in first_value if c.isalnum() or c in (' ', '-', '_'))
+        safe_filename = safe_filename.strip() or f"row_{row_number}"
+        
+        # 타임스탬프 추가
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"db_{safe_filename}_{timestamp}"
+        
+        # FileHandler의 convert_text_to_pdf 사용
+        pdf_path = self.file_handler.convert_text_to_pdf(content, filename)
+        
+        if pdf_path:
+            logger.debug(f"PDF 파일 생성: {pdf_path.name}")
+            return pdf_path
+        else:
+            logger.error(f"{row_number}행: PDF 변환 실패")
+            return None
+    
     def _print_statistics(self):
         """처리 통계 출력"""
         logger.info("-"*80)
         logger.info("DB 처리 통계")
         logger.info(f"  총 행 수: {self.stats['total_rows']}")
         logger.info(f"  텍스트 변환: {self.stats['content_conversions']}")
+        logger.info(f"  PDF 변환: {self.stats['pdf_conversions']}")
         logger.info(f"  건너뜀: {self.stats['skipped']}")
         logger.info("-"*80)
 

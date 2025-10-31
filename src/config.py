@@ -11,9 +11,10 @@ load_dotenv()
 # 프로젝트 루트 디렉토리
 ROOT_DIR = Path(__file__).parent
 
-# RAGFlow 설정
-RAGFLOW_API_KEY = os.getenv("RAGFLOW_API_KEY", "")
-RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "http://localhost:9380")
+# Management API 설정 (RAGFlow API Key 대신 사용자명/비밀번호 사용)
+MANAGEMENT_USERNAME = os.getenv("MANAGEMENT_USERNAME", "admin")
+MANAGEMENT_PASSWORD = os.getenv("MANAGEMENT_PASSWORD", "12345678")
+RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "http://localhost:5000")
 
 # 지식베이스 권한 설정
 DATASET_PERMISSION = os.getenv("DATASET_PERMISSION", "me")  # "me" 또는 "team"
@@ -149,6 +150,73 @@ else:
 
 # 데이터 소스 선택
 DATA_SOURCE = os.getenv("DATA_SOURCE", "excel")  # "excel", "db", "both"
+
+# 파싱 진행 상황 모니터링 설정
+MONITOR_PARSE_PROGRESS = os.getenv("MONITOR_PARSE_PROGRESS", "false").lower() == "true"
+PARSE_TIMEOUT_MINUTES = int(os.getenv("PARSE_TIMEOUT_MINUTES", "30"))  # 최대 대기 시간 (분)
+
+# ==================== Revision 관리 설정 ====================
+# Revision 관리 활성화 여부
+ENABLE_REVISION_MANAGEMENT = os.getenv("ENABLE_REVISION_MANAGEMENT", "true").lower() == "true"
+
+# 동일한 revision일 때 건너뛰기
+SKIP_SAME_REVISION = os.getenv("SKIP_SAME_REVISION", "true").lower() == "true"
+
+# 삭제 순서 (True: 삭제→업로드, False: 업로드→삭제)
+DELETE_BEFORE_UPLOAD = os.getenv("DELETE_BEFORE_UPLOAD", "true").lower() == "true"
+
+# ==================== 시트 타입 감지 키워드 ====================
+SHEET_TYPE_KEYWORDS = {
+    # 목차 시트 (처리하지 않음)
+    'toc': ['목차', 'TOC', 'Contents', 'Index', '차례'],
+    
+    # 이력관리 시트 (텍스트 변환)
+    'history': ['이력', 'History', '변경', '히스토리', '개정', 'Revision History'],
+    
+    # 소프트웨어 형상기록 시트 (텍스트 변환)
+    'software': ['소프트웨어', 'Software', 'SW', '형상', 'Configuration'],
+}
+
+# ==================== 컬럼명 매핑 (유연한 매칭) ====================
+COLUMN_NAME_MAPPINGS = {
+    # REV 관련 컬럼명
+    'rev': ['REV', 'Rev', 'rev', 'revision', 'Revision', '리비전', '버전', 'Ver'],
+    
+    # WBS 관련 컬럼명
+    'wbs': ['WBS', 'wbs', 'Wbs', '작업분류체계', '업무분류', '업무분류체계'],
+    
+    # 작성버전 관련 컬럼명
+    'version': ['작성버전', '작성 버전', '버전', 'Version', 'Ver', 'ver'],
+    
+    # 관리번호 관련 컬럼명
+    'manage_no': ['관리번호', '관리 번호', '문서번호', '문서 번호', 'ID', '문서ID', 'DocID', 'Document ID'],
+}
+
+# ==================== 텍스트 변환 설정 (이력관리/소프트웨어 시트용) ====================
+# 최대 텍스트 길이 (문자 수 기준, 약 8192 토큰에 해당)
+# 한글: 1자 ≈ 2.5 토큰, 영문: 1단어 ≈ 1.5 토큰
+MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "3500"))
+
+# 텍스트 파일 인코딩
+TEXT_ENCODING = os.getenv("TEXT_ENCODING", "utf-8")
+
+# 행 구분자 (이력관리 시트 텍스트 변환 시)
+ROW_SEPARATOR = os.getenv("ROW_SEPARATOR", "\n---\n")
+
+# 이력관리/소프트웨어 시트 업로드 방식
+# - "text": 텍스트로 변환 후 PDF로 변환하여 업로드 (기본값)
+# - "excel": Excel 파일로 추출하여 .xlsx 파일로 업로드
+HISTORY_SHEET_UPLOAD_FORMAT = os.getenv("HISTORY_SHEET_UPLOAD_FORMAT", "text").lower()
+
+# ==================== 테스트 모드 설정 ====================
+# 테스트 모드 활성화 여부
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+
+# 테스트 모드일 때 처리할 시트 수 제한 (0 = 무제한)
+TEST_MAX_SHEETS = int(os.getenv("TEST_MAX_SHEETS", "2"))
+
+# 테스트 모드일 때 시트당 처리할 행 수 제한 (0 = 무제한)
+TEST_MAX_ROWS = int(os.getenv("TEST_MAX_ROWS", "2"))
 
 # 내부 사용 (개별 파라미터 방식은 제거됨 - 연결 문자열만 사용)
 DB_TYPE = ""
