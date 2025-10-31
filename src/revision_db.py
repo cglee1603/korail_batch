@@ -109,7 +109,7 @@ class RevisionDB:
         except Exception as e:
             logger.error(f"테이블 삭제 실패: {e}")
             return False
-    
+     
     def get_document(self, document_key: str, dataset_id: str) -> Optional[Dict]:
         """
         문서 조회
