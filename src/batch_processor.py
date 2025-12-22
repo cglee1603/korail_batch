@@ -22,6 +22,7 @@ from config import (
     ENABLE_REVISION_MANAGEMENT,
     SKIP_SAME_REVISION,
     DELETE_BEFORE_UPLOAD,
+    PURGE_BEFORE_HISTORY_SOFTWARE,
     HISTORY_SHEET_UPLOAD_FORMAT,
     TEMP_DIR
 )
@@ -30,30 +31,58 @@ from config import (
 class BatchProcessor:
     """배치 처리 메인 클래스"""
     
-    def __init__(self, excel_path: str = None, data_source: str = None):
+    def __init__(self, excel_path: str = None, data_source: str = None, filesystem_path: str = None):
         """
         Args:
             excel_path: 엑셀 파일 경로
-            data_source: 데이터 소스 ("excel", "db", "both")
+            data_source: 데이터 소스 ("excel", "db", "filesystem", "both" 등 콤마 구분)
+            filesystem_path: 파일시스템 루트 경로 (filesystem 모드용)
         """
         self.excel_path = excel_path or EXCEL_FILE_PATH
-        self.data_source = data_source or DATA_SOURCE
         
+        # 데이터 소스 파싱 (콤마로 구분된 값 지원)
+        raw_source = data_source or DATA_SOURCE
+        self.data_sources = [s.strip().lower() for s in raw_source.split(',')]
+        
+        self.data_source = raw_source  # 로깅용 원본 문자열
+        self.filesystem_path = filesystem_path
+
         # 프로세서 초기화
         self.excel_processor = None
         self.db_processor = None
+        self.filesystem_processor = None
         
         # Excel 소스
-        if self.data_source in ['excel', 'both']:
+        if 'excel' in self.data_sources:
             self.excel_processor = ExcelProcessor(self.excel_path)
         
+        # Revision 관리 DB 먼저 초기화 (FileHandler에서 사용)
+        self.revision_db = RevisionDB()
+        
+        # 암복호화 핸들러 초기화
+        from crypto_handler import CryptoHandler
+        self.crypto_handler = CryptoHandler()
+        
+        # FileHandler 초기화 (다운로드 캐시 + 암복호화)
+        self.file_handler = FileHandler(
+            revision_db=self.revision_db,
+            crypto_handler=self.crypto_handler
+        )
+
+        # FilesystemProcessor 초기화 (FileHandler 생성 후)
+        if 'filesystem' in self.data_sources and self.filesystem_path:
+            from filesystem_processor import FilesystemProcessor
+            self.filesystem_processor = FilesystemProcessor(
+                root_path=self.filesystem_path,
+                revision_db=self.revision_db,
+                file_handler=self.file_handler
+            )
+        
         # DB 소스
-        if self.data_source in ['db', 'both']:
+        if 'db' in self.data_sources:
             self._init_db_processor()
         
-        self.file_handler = FileHandler()
         self.ragflow_client = RAGFlowClient()
-        self.revision_db = RevisionDB()  # Revision 관리 DB
         
         self.stats = {
             'total_sheets': 0,
@@ -94,10 +123,12 @@ class BatchProcessor:
         except ImportError as e:
             logger.error(f"DB 모듈 import 실패: {e}")
             logger.error("필요한 패키지를 설치하세요: pip install sqlalchemy psycopg2-binary pymysql")
-            self.data_source = 'excel'
+            if 'db' in self.data_sources:
+                self.data_sources.remove('db')
         except Exception as e:
             logger.error(f"DB 프로세서 초기화 실패: {e}")
-            self.data_source = 'excel'
+            if 'db' in self.data_sources:
+                self.data_sources.remove('db')
     
     def is_revision_newer(self, old_rev: str, new_rev: str) -> bool:
         """
@@ -200,8 +231,10 @@ class BatchProcessor:
         logger.info("="*80)
         logger.info("배치 프로세스 시작")
         logger.info(f"데이터 소스: {self.data_source.upper()}")
-        if self.data_source in ['excel', 'both']:
+        if 'excel' in self.data_sources:
             logger.info(f"엑셀 파일: {self.excel_path}")
+        if 'filesystem' in self.data_sources and self.filesystem_path:
+            logger.info(f"파일시스템 경로: {self.filesystem_path}")
         logger.info(f"Revision 관리: {'활성화' if ENABLE_REVISION_MANAGEMENT else '비활성화'}")
         logger.info("="*80)
         
@@ -210,26 +243,39 @@ class BatchProcessor:
             all_data = {}
             
             # 1. Excel 데이터 추출
-            if self.data_source in ['excel', 'both'] and self.excel_processor:
+            if 'excel' in self.data_sources and self.excel_processor:
                 logger.info("\n[Excel 데이터 처리]")
                 sheet_data = self.excel_processor.process_all_sheets()
                 all_data.update(sheet_data)
                 self.stats['total_sheets'] += len(sheet_data)
             
             # 2. DB 데이터 추출
-            if self.data_source in ['db', 'both'] and self.db_processor:
+            if 'db' in self.data_sources and self.db_processor:
                 logger.info("\n[DB 데이터 처리]")
                 db_data = self.db_processor.process(query_name="DB_Query")
                 # DB 데이터는 기존 형식이므로 변환
                 for sheet_name, items in db_data.items():
                     all_data[sheet_name] = (SheetType.ATTACHMENT, items, [])
                 self.stats['total_sheets'] += len(db_data)
+
+            # 3. Filesystem 처리 (독립적으로 실행)
+            if 'filesystem' in self.data_sources and self.filesystem_processor:
+                logger.info("\n[Filesystem 데이터 처리]")
+                self.filesystem_processor.process()
+                # 통계 병합
+                fs_stats = self.filesystem_processor.stats
+                self.stats['datasets_created'] += fs_stats['datasets_created']
+                self.stats['total_files'] += fs_stats['total_files']
+                self.stats['new_documents'] += fs_stats['new_files']
+                self.stats['updated_documents'] += fs_stats['updated_files']
+                self.stats['skipped_documents'] += fs_stats['skipped_files']
+                self.stats['failed_uploads'] += fs_stats['failed_files']
             
-            if not all_data:
+            if not all_data and 'filesystem' not in self.data_sources:
                 logger.error("처리할 데이터가 없습니다.")
                 return
             
-            # 3. 시트 타입별로 처리
+            # 4. 시트 타입별로 처리 (Excel/DB 데이터)
             for sheet_name, (sheet_type, items, headers) in all_data.items():
                 logger.info(f"\n{'='*60}")
                 logger.info(f"시트 처리 시작: {sheet_name} (타입: {sheet_type.value})")
@@ -262,10 +308,14 @@ class BatchProcessor:
                     self.stats['attachment_sheets'] += 1
                     self.process_sheet_attachments(sheet_name, items)
             
-            # 4. 임시 파일 정리
+            # 5. 임시 파일 정리
             self.file_handler.cleanup_temp()
             
-            # 5. 통계 출력
+            # 6. 복호화된 파일 정리
+            if self.crypto_handler and self.crypto_handler.enabled:
+                self.crypto_handler.cleanup_decrypted_files()
+            
+            # 7. 통계 출력
             self.print_statistics()
         
         except Exception as e:
@@ -329,27 +379,33 @@ class BatchProcessor:
             self.stats['datasets_created'] += 1
             
             # Revision 관리가 활성화된 경우: RevisionDB에서 기존 문서 목록 조회
-            existing_docs_map = {}  # document_key -> {doc_id, revision, ...}
+            existing_docs_map = {}  # document_key -> List[{doc_id, revision, name}]
             dataset_id = dataset.get('id')
             
             if ENABLE_REVISION_MANAGEMENT:
                 logger.info(f"[{sheet_name}] RevisionDB에서 기존 문서 목록 조회 중...")
                 db_docs = self.revision_db.get_all_documents(dataset_id=dataset_id)
                 
-                # 문서를 document_key로 매핑
+                # 문서를 document_key로 그룹화 (하나의 키가 여러 파일을 가질 수 있음)
                 for doc in db_docs:
                     doc_key = doc.get('document_key')
                     if doc_key:
-                        existing_docs_map[doc_key] = {
+                        if doc_key not in existing_docs_map:
+                            existing_docs_map[doc_key] = []
+                        
+                        existing_docs_map[doc_key].append({
                             'doc_id': doc.get('document_id'),
                             'revision': doc.get('revision'),
-                            'name': doc.get('file_name')
-                        }
+                            'name': doc.get('file_name'),
+                            'is_archive': doc.get('is_part_of_archive', False)
+                        })
                 
-                logger.info(f"[{sheet_name}] RevisionDB에서 기존 문서 {len(existing_docs_map)}개 발견")
+                total_files = sum(len(files) for files in existing_docs_map.values())
+                logger.info(f"[{sheet_name}] RevisionDB에서 기존 문서 {len(existing_docs_map)}개 (총 {total_files}개 파일) 발견")
             
-            # 각 항목 처리
-            uploaded_count = 0
+            # 각 항목 처리 (업로드된 문서 ID 수집)
+            uploaded_document_ids = []  # v21: 파싱할 문서 ID 리스트
+            
             for item in items:
                 document_key = item.get('document_key')
                 new_revision = item.get('revision')
@@ -360,8 +416,11 @@ class BatchProcessor:
                 
                 # Revision 비교 및 처리
                 if ENABLE_REVISION_MANAGEMENT and document_key in existing_docs_map:
-                    existing_info = existing_docs_map[document_key]
-                    old_revision = existing_info.get('revision')
+                    existing_files = existing_docs_map[document_key]  # List[{doc_id, revision, name}] 혹은 Dict
+                    # 리스트/딕셔너리 모두 안전하게 처리
+                    files_list = existing_files if isinstance(existing_files, list) else ([existing_files] if isinstance(existing_files, dict) else [])
+                    old_revision = files_list[0].get('revision') if files_list else None
+                    file_count = len(files_list)
                     
                     # Revision 비교
                     if old_revision and new_revision:
@@ -380,43 +439,64 @@ class BatchProcessor:
                             # 업데이트 필요
                             logger.info(f"  [{document_key}] Revision 업데이트: {old_revision} → {new_revision}")
                             
-                            # 기존 문서 삭제
+                            # 기존 문서들 삭제 (압축 파일인 경우 여러 개)
                             if DELETE_BEFORE_UPLOAD:
-                                doc_id = existing_info.get('doc_id')
-                                if self.ragflow_client.delete_document(dataset, doc_id):
-                                    self.stats['deleted_documents'] += 1
-                                    logger.info(f"    ✓ RAGFlow에서 기존 문서 삭제 완료")
-                                    # RevisionDB에서도 삭제
-                                    self.revision_db.delete_document(document_key, dataset_id)
-                                    logger.debug(f"    ✓ RevisionDB에서도 삭제 완료")
-                                else:
-                                    self.stats['failed_deletions'] += 1
-                                    logger.error(f"    ✗ 기존 문서 삭제 실패 - 건너뜀")
+                                logger.info(f"    기존 파일 {file_count}개 삭제 중...")
+                                deleted_count = 0
+                                failed_count = 0
+                                
+                                for file_info in files_list:
+                                    doc_id = file_info.get('doc_id')
+                                    file_name = file_info.get('name')
+                                    
+                                    if self.ragflow_client.delete_document(dataset, doc_id):
+                                        deleted_count += 1
+                                        logger.debug(f"      ✓ RAGFlow 삭제: {file_name}")
+                                    else:
+                                        failed_count += 1
+                                        logger.warning(f"      ✗ RAGFlow 삭제 실패: {file_name}")
+                                
+                                # RevisionDB에서도 해당 키의 모든 파일 삭제
+                                db_deleted = self.revision_db.delete_document(document_key, dataset_id)
+                                
+                                self.stats['deleted_documents'] += deleted_count
+                                self.stats['failed_deletions'] += failed_count
+                                
+                                if deleted_count > 0:
+                                    logger.info(f"    ✓ 기존 파일 삭제 완료: {deleted_count}개 (실패: {failed_count}개)")
+                                
+                                if failed_count == file_count:
+                                    logger.error(f"    ✗ 모든 기존 파일 삭제 실패 - 건너뜀")
                                     continue
                     else:
                         logger.debug(f"  [{document_key}] Revision 정보 불완전 - 업데이트 진행")
                     
-                    # 파일 업로드
-                    if self.process_item(dataset, item):
-                        uploaded_count += 1
+                    # 파일 업로드 (v21: 문서 ID 리스트 반환)
+                    doc_ids = self.process_item(dataset, item)
+                    if doc_ids:
+                        uploaded_document_ids.extend(doc_ids)
                         self.stats['updated_documents'] += 1
-                        logger.info(f"    ✓ 문서 업데이트 완료")
+                        logger.info(f"    ✓ 문서 업데이트 완료 ({len(doc_ids)}개 파일)")
                 
                 else:
                     # 신규 문서
                     logger.info(f"  [{document_key}] 신규 문서 (revision: {new_revision})")
-                    if self.process_item(dataset, item):
-                        uploaded_count += 1
+                    doc_ids = self.process_item(dataset, item)
+                    if doc_ids:
+                        uploaded_document_ids.extend(doc_ids)
                         self.stats['new_documents'] += 1
-                        logger.info(f"    ✓ 신규 문서 업로드 완료")
+                        logger.info(f"    ✓ 신규 문서 업로드 완료 ({len(doc_ids)}개 파일)")
             
-            # 일괄 파싱 시작
-            if uploaded_count > 0:
-                logger.info(f"[{sheet_name}] {uploaded_count}개 파일 업로드 완료, 일괄 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(dataset)
+            # v21: 업로드된 문서 ID들만 파싱
+            if uploaded_document_ids:
+                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
+                parse_started = self.ragflow_client.start_batch_parse(
+                    dataset,
+                    document_ids=uploaded_document_ids
+                )
                 
                 if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
                 elif parse_started:
                     logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
             else:
@@ -464,19 +544,23 @@ class BatchProcessor:
             
             self.stats['datasets_created'] += 1
             
-            # 각 항목 처리
-            uploaded_count = 0
+            # 각 항목 처리 (v21: 문서 ID 수집)
+            uploaded_document_ids = []
             for item in items:
-                if self.process_item(dataset, item):
-                    uploaded_count += 1
+                doc_ids = self.process_item(dataset, item, check_processed_urls=True)
+                if doc_ids:
+                    uploaded_document_ids.extend(doc_ids)
             
-            # 일괄 파싱 시작
-            if uploaded_count > 0:
-                logger.info(f"[{sheet_name}] {uploaded_count}개 파일 업로드 완료, 일괄 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(dataset)
+            # v21: 업로드된 문서 ID들만 파싱
+            if uploaded_document_ids:
+                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
+                parse_started = self.ragflow_client.start_batch_parse(
+                    dataset,
+                    document_ids=uploaded_document_ids
+                )
                 
                 if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
                 elif parse_started:
                     logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
             
@@ -518,7 +602,23 @@ class BatchProcessor:
                 return
             
             self.stats['datasets_created'] += 1
-            uploaded_count = 0
+            
+            # 업로드 전 전량 삭제(문서+연결 파일) - 히스토리/소프트웨어 시트 전용 퍼지
+            if PURGE_BEFORE_HISTORY_SOFTWARE:
+                try:
+                    logger.info(f"[{sheet_name}] 업로드 전 데이터셋 전량 삭제(문서+파일) 수행")
+                    purge_result = self.ragflow_client.delete_all_documents_and_files_in_dataset(dataset)
+                    logger.info(
+                        f"[{sheet_name}] 퍼지 결과 - 문서: {purge_result.get('deleted_documents', 0)} 삭제 "
+                        f"(실패 {purge_result.get('failed_documents', 0)}) | "
+                        f"파일: {purge_result.get('deleted_files', 0)} 삭제 "
+                        f"(실패 {purge_result.get('failed_files', 0)})"
+                    )
+                except Exception as e:
+                    logger.error(f"[{sheet_name}] 퍼지 중 오류: {e}")
+                
+            # v21: 업로드된 문서 ID 추적
+            uploaded_document_ids = []
             
             if upload_format == "excel":
                 # Excel 파일로 추출하여 업로드
@@ -536,15 +636,16 @@ class BatchProcessor:
                     '파일형식': 'excel'
                 }
                 
-                success = self.ragflow_client.upload_document(
+                upload_result = self.ragflow_client.upload_document(
                     dataset=dataset,
                     file_path=excel_file_path,
                     metadata=metadata,
                     display_name=f"{sheet_name}.xlsx"
                 )
                 
-                if success:
-                    uploaded_count += 1
+                if upload_result:
+                    doc_id = upload_result.get('document_id')
+                    uploaded_document_ids.append(doc_id)
                     self.stats['successful_uploads'] += 1
                     logger.info(f"[{sheet_name}] Excel 파일 업로드 완료")
                 else:
@@ -554,7 +655,11 @@ class BatchProcessor:
             else:  # upload_format == "text" - PDF로 변환하여 업로드
                 # 텍스트로 변환 후 PDF로 변환 (여러 청크 가능)
                 logger.info(f"[{sheet_name}] 텍스트로 변환 중...")
-                text_chunks = self.excel_processor.convert_sheet_to_text_chunks(sheet_name)
+                # PDF 변환 시 Row 단위 페이지 제어를 위해 리스트 형태로 반환받음
+                text_chunks = self.excel_processor.convert_sheet_to_text_chunks(
+                    sheet_name,
+                    return_rows_as_list=True
+                )
                 
                 if not text_chunks:
                     logger.warning(f"[{sheet_name}] 변환된 텍스트가 비어있습니다.")
@@ -589,28 +694,32 @@ class BatchProcessor:
                         '총_청크_수': str(len(text_chunks))
                     }
                     
-                    success = self.ragflow_client.upload_document(
+                    upload_result = self.ragflow_client.upload_document(
                         dataset=dataset,
                         file_path=pdf_file_path,
                         metadata=metadata,
                         display_name=display_name
                     )
                     
-                    if success:
-                        uploaded_count += 1
+                    if upload_result:
+                        doc_id = upload_result.get('document_id')
+                        uploaded_document_ids.append(doc_id)
                         self.stats['successful_uploads'] += 1
                         logger.info(f"[{sheet_name}] 청크 {chunk_idx}/{len(text_chunks)} PDF 업로드 완료")
                     else:
                         self.stats['failed_uploads'] += 1
                         logger.error(f"[{sheet_name}] 청크 {chunk_idx}/{len(text_chunks)} PDF 업로드 실패")
             
-            # 일괄 파싱 시작
-            if uploaded_count > 0:
-                logger.info(f"[{sheet_name}] {uploaded_count}개 파일 업로드 완료, 일괄 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(dataset)
+            # v21: 업로드된 문서 ID들만 파싱
+            if uploaded_document_ids:
+                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 파일 업로드 완료, 파싱 시작")
+                parse_started = self.ragflow_client.start_batch_parse(
+                    dataset,
+                    document_ids=uploaded_document_ids
+                )
                 
                 if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
                 elif parse_started:
                     logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
             
@@ -646,7 +755,7 @@ class BatchProcessor:
                 description=dataset_description,
                 permission=DATASET_PERMISSION,
                 embedding_model=None,  # 시스템 기본값 사용 (tenant.embd_id)
-                chunk_method=CHUNK_METHOD,  # GUI와 동일한 청크 방법
+                chunk_method=CHUNK_METHOD,  # GUI와 동일한 파싱 방법
                 parser_config=PARSER_CONFIG  # GUI와 동일한 파서 설정
             )
             
@@ -678,118 +787,180 @@ class BatchProcessor:
         except Exception as e:
             logger.error(f"시트 '{sheet_name}' 처리 중 오류: {e}")
     
-    def process_item(self, dataset: object, item: Dict) -> Optional[str]:
+    def process_item(self, dataset: object, item: Dict, check_processed_urls: bool = False) -> List[str]:
         """
         개별 항목 처리 (파일 다운로드, 변환, 업로드)
         
         Args:
             dataset: Dataset 객체
             item: {'hyperlink': '...', 'metadata': {...}, 'document_key': '...', 'revision': '...', ...}
+            check_processed_urls: 이미 처리된 URL인지 확인할지 여부 (Revision 관리 안하는 시트용)
         
         Returns:
-            문서 ID (성공 시) 또는 None (실패 시)
+            업로드된 문서 ID 리스트 (성공 시) 또는 빈 리스트 (실패 시)
         """
-        hyperlink = item.get('hyperlink')
+        hyperlinks = []
+        # hyperlinks 배열 우선, 없으면 단일 hyperlink 사용
+        if isinstance(item.get('hyperlinks'), list) and item.get('hyperlinks'):
+            hyperlinks = [h for h in item.get('hyperlinks') if isinstance(h, str) and h.strip()]
+        elif item.get('hyperlink'):
+            hyperlinks = [item.get('hyperlink')]
         metadata = item.get('metadata', {})
         row_number = item.get('row_number')
         document_key = item.get('document_key')
         revision = item.get('revision')
         
-        if not hyperlink:
+        if not hyperlinks:
             logger.warning(f"{row_number}행: 하이퍼링크가 없습니다.")
-            return None
+            return []
         
-        self.stats['total_files'] += 1
-        
-        try:
-            # 1. 파일 가져오기 (다운로드 또는 복사)
-            file_path = self.file_handler.get_file(hyperlink)
-            
-            if not file_path:
-                logger.error(f"{row_number}행: 파일 가져오기 실패 - {hyperlink}")
-                self.stats['failed_uploads'] += 1
-                return None
-            
-            # 2. 파일 처리 (형식 변환)
-            processed_files = self.file_handler.process_file(file_path)
-            
-            if not processed_files:
-                logger.error(f"{row_number}행: 파일 처리 실패 - {file_path.name}")
-                self.stats['failed_uploads'] += 1
-                return None
-            
-            # 3. 처리된 파일들을 RAGFlow에 업로드
-            document_id = None
-            for processed_path, file_type in processed_files:
-                # 메타데이터에 원본 정보 추가
-                enhanced_metadata = metadata.copy()
-                enhanced_metadata['원본_파일'] = file_path.name
-                enhanced_metadata['파일_형식'] = file_type
-                enhanced_metadata['엑셀_행번호'] = str(row_number)
-                enhanced_metadata['하이퍼링크'] = hyperlink
+        all_uploaded_doc_ids: List[str] = []
+        for hyperlink in hyperlinks:
+            # 처리된 URL 확인 (Revision 관리 안하는 시트용)
+            if check_processed_urls and self.revision_db.is_url_processed(hyperlink):
+                logger.info(f"{row_number}행: 이미 처리된 URL이므로 스킵합니다 - {hyperlink}")
+                continue
+
+            self.stats['total_files'] += 1
+            try:
+                # 1. 파일 가져오기 (다운로드 또는 복사)
+                file_path = self.file_handler.get_file(hyperlink)
                 
-                # Revision 관리 정보 추가
-                if document_key:
-                    enhanced_metadata['document_key'] = document_key
-                if revision:
-                    enhanced_metadata['revision'] = revision
+                if not file_path:
+                    logger.error(f"{row_number}행: 파일 가져오기 실패 - {hyperlink}")
+                    self.stats['failed_uploads'] += 1
+                    continue
                 
-                # 업로드 (document_id 반환)
-                doc_id = self.ragflow_client.upload_document(
-                    dataset=dataset,
-                    file_path=processed_path,
-                    metadata=enhanced_metadata,
-                    display_name=processed_path.name
-                )
+                # 2. 파일 처리 (형식 변환)
+                processed_files = self.file_handler.process_file(file_path)
                 
-                if doc_id:
-                    document_id = doc_id  # 첫 번째 성공한 문서 ID 사용
-                    self.stats['successful_uploads'] += 1
-                    logger.log_file_process(
-                        processed_path.name, 
-                        "업로드 성공",
-                        f"형식: {file_type}, 행: {row_number}, 문서ID: {doc_id}"
+                if not processed_files:
+                    logger.error(f"{row_number}행: 파일 처리 실패 - {file_path.name}")
+                    self.stats['failed_uploads'] += 1
+                    continue
+                
+                # 3. 처리된 파일들을 RAGFlow에 업로드
+                # 압축 파일 여부 확인 (ZIP 파일이고 여러 파일이 추출된 경우)
+                is_archive = file_path.suffix.lower() == '.zip' and len(processed_files) > 1
+                archive_source = file_path.name if is_archive else None
+                
+                if is_archive:
+                    logger.info(f"압축 파일 감지: {file_path.name} ({len(processed_files)}개 파일 추출됨)")
+                
+                for processed_path, file_type in processed_files:
+                    # 메타데이터에 원본 정보 추가
+                    enhanced_metadata = metadata.copy()
+                    enhanced_metadata['원본_파일'] = file_path.name
+                    enhanced_metadata['파일_형식'] = file_type
+                    enhanced_metadata['엑셀_행번호'] = str(row_number)
+                    enhanced_metadata['하이퍼링크'] = hyperlink
+                    
+                    # 압축 파일 정보 추가
+                    if is_archive:
+                        enhanced_metadata['압축파일'] = archive_source
+                        enhanced_metadata['압축파일_내_파일명'] = processed_path.name
+                    
+                    # Revision 관리 정보 추가
+                    if document_key:
+                        enhanced_metadata['document_key'] = document_key
+                    if revision:
+                        enhanced_metadata['revision'] = revision
+                    
+                    # 업로드 (document_id 및 file_id 반환)
+                    upload_result = self.ragflow_client.upload_document(
+                        dataset=dataset,
+                        file_path=processed_path,
+                        metadata=enhanced_metadata,
+                        display_name=processed_path.name
                     )
                     
-                    # RevisionDB에 저장 (revision 관리가 활성화된 경우)
-                    if ENABLE_REVISION_MANAGEMENT and document_key:
-                        dataset_id = dataset.get('id')
-                        dataset_name = dataset.get('name')
-                        self.revision_db.save_document(
-                            document_key=document_key,
-                            document_id=doc_id,
-                            dataset_id=dataset_id,
-                            dataset_name=dataset_name,
-                            revision=revision,
-                            file_path=str(processed_path),
-                            file_name=processed_path.name
+                    if upload_result:
+                        doc_id = upload_result.get('document_id')
+                        file_id = upload_result.get('file_id')
+
+                        # 메타데이터 업데이트 (업로드 후 별도 호출)
+                        # 중요: 사용자 요구사항에 따라 엑셀의 row별 헤더:값(metadata)만 전달한다.
+                        self.ragflow_client.update_document(dataset.get('id'), doc_id, metadata)
+
+                        all_uploaded_doc_ids.append(doc_id)
+                        self.stats['successful_uploads'] += 1
+                        logger.log_file_process(
+                            processed_path.name, 
+                            "업로드 성공",
+                            f"형식: {file_type}, 행: {row_number}, 문서ID: {doc_id}, 파일ID: {file_id}"
                         )
-                        logger.debug(f"RevisionDB에 저장: {document_key} → {doc_id}")
-                else:
-                    self.stats['failed_uploads'] += 1
-                    logger.log_file_process(
-                        processed_path.name, 
-                        "업로드 실패",
-                        f"형식: {file_type}, 행: {row_number}"
-                    )
-            
-            return document_id
+                        
+                        # RevisionDB에 저장 (revision 관리가 활성화된 경우)
+                        if ENABLE_REVISION_MANAGEMENT and document_key:
+                            dataset_id = dataset.get('id')
+                            dataset_name = dataset.get('name')
+                            
+                            # DB 저장 시도
+                            db_success = self.revision_db.save_document(
+                                document_key=document_key,
+                                document_id=doc_id,
+                                file_id=file_id,
+                                dataset_id=dataset_id,
+                                dataset_name=dataset_name,
+                                revision=revision,
+                                file_path=str(processed_path),
+                                file_name=processed_path.name,
+                                is_part_of_archive=is_archive,
+                                archive_source=archive_source
+                            )
+                            
+                            if db_success:
+                                if is_archive:
+                                    logger.debug(f"RevisionDB에 저장 (압축 파일): {document_key}/{processed_path.name} → {doc_id} (파일ID: {file_id})")
+                                else:
+                                    logger.debug(f"RevisionDB에 저장: {document_key} → {doc_id} (파일ID: {file_id})")
+                            else:
+                                # DB 저장 실패 시 RAGFlow 업로드 롤백 (삭제)
+                                logger.error(f"RevisionDB 저장 실패! 데이터 정합성을 위해 RAGFlow 업로드를 롤백(삭제)합니다: {processed_path.name}")
+                                try:
+                                    self.ragflow_client.delete_document(dataset, doc_id)
+                                    logger.info(f"  ✓ 롤백 성공: 문서 삭제됨 ({doc_id})")
+                                except Exception as e:
+                                    logger.error(f"  ✗ 롤백 실패: 문서를 수동으로 삭제해야 합니다 ({doc_id}): {e}")
+                                
+                                # 업로드 실패로 처리 및 통계 수정
+                                if doc_id in all_uploaded_doc_ids:
+                                    all_uploaded_doc_ids.remove(doc_id)
+                                self.stats['successful_uploads'] -= 1
+                                self.stats['failed_uploads'] += 1
+                                continue  # 다음 파일 처리
+                        
+                        # 처리된 URL 저장 (Revision 관리 안하는 시트용)
+                        if check_processed_urls:
+                            self.revision_db.add_processed_url(hyperlink)
+
+                    else:
+                        self.stats['failed_uploads'] += 1
+                        logger.log_file_process(
+                            processed_path.name, 
+                            "업로드 실패",
+                            f"형식: {file_type}, 행: {row_number}"
+                        )
+            except Exception as e:
+                logger.error(f"{row_number}행 처리 중 오류: {e}")
+                self.stats['failed_uploads'] += 1
+                continue
         
-        except Exception as e:
-            logger.error(f"{row_number}행 처리 중 오류: {e}")
-            self.stats['failed_uploads'] += 1
-            return None
+        return all_uploaded_doc_ids
     
-    def monitor_parse_progress(self, dataset: Dict, dataset_name: str, max_wait_minutes: int = 30):
+    def monitor_parse_progress(self, dataset: Dict, dataset_name: str, document_ids: List[str] = None, max_wait_minutes: int = 30):
         """
-        파싱 진행 상황 모니터링 (Management API 전용)
+        파싱 진행 상황 모니터링 (RAGFlow v21)
         
         Args:
             dataset: Dataset 딕셔너리
             dataset_name: 데이터셋 이름 (로그용)
+            document_ids: 모니터링할 문서 ID 리스트
             max_wait_minutes: 최대 대기 시간 (분, 기본: 30분)
         """
         logger.info(f"[{dataset_name}] 📊 파싱 진행 상황 모니터링 시작...")
+        if document_ids:
+            logger.info(f"[{dataset_name}] 모니터링 대상: {len(document_ids)}개 문서")
         logger.info(f"[{dataset_name}] 최대 대기 시간: {max_wait_minutes}분")
         
         start_time = time.time()
@@ -799,8 +970,8 @@ class BatchProcessor:
         
         while True:
             try:
-                # 진행 상황 조회
-                progress = self.ragflow_client.get_parse_progress(dataset)
+                # v21: 문서 ID 리스트로 진행 상황 조회
+                progress = self.ragflow_client.get_parse_progress(dataset, document_ids)
                 
                 if progress:
                     status = progress.get('status', 'unknown')
@@ -862,6 +1033,439 @@ class BatchProcessor:
         except:
             pass
     
+    def delete_knowledge_by_dataset_name(self, dataset_name: str, confirm: bool = False) -> Dict:
+        """
+        dataset_name으로 RAGFlow 지식베이스의 모든 문서와 파일을 삭제
+        
+        Args:
+            dataset_name: 지식베이스 이름
+            confirm: True로 설정해야만 실행됨 (실수 방지)
+        
+        Returns:
+            삭제 결과 딕셔너리
+        """
+        logger.info("="*80)
+        logger.info(f"지식베이스 '{dataset_name}' 전량 삭제(문서+파일) 조회")
+        logger.info("="*80)
+        
+        try:
+            # 1. 지식베이스 조회
+            logger.info(f"지식베이스 '{dataset_name}' 조회 중...")
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return {
+                    'success': False,
+                    'message': f"지식베이스 '{dataset_name}'을 찾을 수 없습니다."
+                }
+            
+            dataset_id = dataset.get('id')
+            logger.info(f"✓ 지식베이스 발견 (dataset_id: {dataset_id})")
+            
+            # 2. 문서 목록 조회
+            logger.info("문서 목록 조회 중...")
+            all_documents = []
+            page = 1
+            page_size = 100
+            while True:
+                documents = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=page_size)
+                if not documents:
+                    break
+                all_documents.extend(documents)
+                if len(documents) < page_size:
+                    break
+                page += 1
+            
+            total_docs = len(all_documents)
+            logger.info(f"✓ {total_docs}개 문서 발견")
+            
+            if not confirm:
+                # 확인 모드: 삭제할 항목만 보여줌
+                logger.info("\n삭제 대상 항목:")
+                logger.info(f"  - 지식베이스: {dataset_name} (ID: {dataset_id})")
+                logger.info(f"  - 문서 수: {total_docs}개")
+                logger.info(f"  - 연결된 파일: {total_docs}개 (문서당 1개)")
+                
+                return {
+                    'success': True,
+                    'total_documents': total_docs,
+                    'dataset_id': dataset_id,
+                    'dataset_name': dataset_name
+                }
+            
+            # 3. 실제 삭제 수행
+            logger.info("\n="*80)
+            logger.info(f"지식베이스 '{dataset_name}' 전량 삭제 시작")
+            logger.info("="*80)
+            
+            purge_result = self.ragflow_client.delete_all_documents_and_files_in_dataset(dataset)
+            
+            deleted_docs = purge_result.get('deleted_documents', 0)
+            failed_docs = purge_result.get('failed_documents', 0)
+            deleted_files = purge_result.get('deleted_files', 0)
+            failed_files = purge_result.get('failed_files', 0)
+            
+            logger.info(f"\n삭제 결과:")
+            logger.info(f"  - 문서: {deleted_docs}개 삭제 (실패: {failed_docs}개)")
+            logger.info(f"  - 파일: {deleted_files}개 삭제 (실패: {failed_files}개)")
+            
+            # 4. RevisionDB에서도 해당 dataset의 모든 항목 삭제
+            logger.info(f"\nRevisionDB에서 '{dataset_name}' 항목 삭제 중...")
+            db_documents = self.revision_db.get_documents_by_dataset_name(dataset_name)
+            db_deleted = 0
+            
+            if db_documents:
+                for doc in db_documents:
+                    document_key = doc.get('document_key')
+                    file_name = doc.get('file_name', 'Unknown')
+                    deleted_count = self.revision_db.delete_document(
+                        document_key=document_key,
+                        dataset_id=dataset_id,
+                        file_name=file_name
+                    )
+                    if deleted_count > 0:
+                        db_deleted += deleted_count
+                
+                logger.info(f"✓ RevisionDB에서 {db_deleted}개 항목 삭제")
+            else:
+                logger.info("RevisionDB에 삭제할 항목이 없습니다.")
+            
+            return {
+                'success': True,
+                'dataset_name': dataset_name,
+                'dataset_id': dataset_id,
+                'total_documents': total_docs,
+                'deleted_documents': deleted_docs,
+                'failed_documents': failed_docs,
+                'deleted_files': deleted_files,
+                'failed_files': failed_files,
+                'db_deleted': db_deleted
+            }
+            
+        except Exception as e:
+            logger.error(f"지식베이스 삭제 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'message': str(e)
+            }
+    
+    def delete_documents_by_dataset_name(self, dataset_name: str, confirm: bool = False) -> Dict:
+        """
+        dataset_name으로 RAGFlow와 RevisionDB에서 모든 문서 삭제
+        
+        Args:
+            dataset_name: 지식베이스 이름
+            confirm: True로 설정해야만 실행됨 (실수 방지)
+        
+        Returns:
+            삭제 결과 딕셔너리
+        """
+        if not confirm:
+            logger.warning("⚠️ 삭제를 실행하려면 confirm=True를 전달해야 합니다.")
+            return {
+                'success': False,
+                'message': 'confirm=True 필요'
+            }
+        
+        logger.info("="*80)
+        logger.info(f"지식베이스 '{dataset_name}' 문서 삭제 시작")
+        logger.info("="*80)
+        
+        try:
+            # 1. RevisionDB에서 문서 조회
+            logger.info(f"[1/2] RevisionDB에서 '{dataset_name}' 문서 조회 중...")
+            documents = self.revision_db.get_documents_by_dataset_name(dataset_name)
+            
+            if not documents:
+                logger.warning(f"'{dataset_name}'에 해당하는 문서가 없습니다.")
+                return {
+                    'success': True,
+                    'total_documents': 0,
+                    'ragflow_deleted': 0,
+                    'ragflow_failed': 0,
+                    'db_deleted': 0
+                }
+            
+            total_docs = len(documents)
+            dataset_id = documents[0].get('dataset_id')
+            logger.info(f"✓ {total_docs}개 문서 발견 (dataset_id: {dataset_id})")
+            
+            # 2. RAGFlow 및 DB에서 순차 삭제 (성공 시에만 DB 삭제)
+            logger.info(f"\n[2/2] RAGFlow 및 DB에서 문서 삭제 중...")
+            ragflow_deleted = 0
+            ragflow_failed = 0
+            db_deleted = 0
+            failed_items = []
+            
+            # dataset 정보 구성
+            dataset = {
+                'id': dataset_id,
+                'name': dataset_name
+            }
+            
+            for idx, doc in enumerate(documents, 1):
+                doc_id = doc.get('document_id')
+                file_id = doc.get('file_id')
+                document_key = doc.get('document_key')
+                file_name = doc.get('file_name', 'Unknown')
+                
+                logger.info(f"  [{idx}/{total_docs}] 처리 중: {file_name} (문서ID: {doc_id}, 파일ID: {file_id})")
+                
+                deletion_success = True
+                failure_reason = None
+                
+                # Step 1: RAGFlow knowledgebase에서 문서 삭제
+                if self.ragflow_client.delete_document(dataset, doc_id):
+                    logger.debug(f"    ✓ RAGFlow 문서 삭제 성공")
+                    ragflow_deleted += 1
+                else:
+                    deletion_success = False
+                    failure_reason = 'RAGFlow 문서 삭제 실패'
+                    logger.warning(f"    ✗ RAGFlow 문서 삭제 실패")
+                
+                # Step 2: RAGFlow에서 업로드된 파일 삭제 (문서 삭제 성공 시에만)
+                if deletion_success and file_id:
+                    if self.ragflow_client.delete_uploaded_file(file_id):
+                        logger.debug(f"    ✓ RAGFlow 파일 삭제 성공")
+                    else:
+                        deletion_success = False
+                        failure_reason = 'RAGFlow 파일 삭제 실패 (문서는 삭제됨)'
+                        logger.warning(f"    ✗ RAGFlow 파일 삭제 실패")
+                elif deletion_success and not file_id:
+                    logger.debug(f"    ⚠ file_id가 없어 파일 삭제 생략")
+                
+                # Step 3: 모두 성공 시에만 DB에서 삭제
+                if deletion_success:
+                    deleted_count = self.revision_db.delete_document(
+                        document_key=document_key,
+                        dataset_id=dataset_id,
+                        file_name=file_name
+                    )
+                    
+                    if deleted_count > 0:
+                        db_deleted += deleted_count
+                        logger.debug(f"    ✓ DB에서 삭제 완료")
+                    else:
+                        logger.warning(f"    ⚠ DB 삭제 실패 (RAGFlow는 삭제됨)")
+                else:
+                    ragflow_failed += 1
+                    failed_items.append({
+                        'document_id': doc_id,
+                        'file_id': file_id,
+                        'file_name': file_name,
+                        'reason': failure_reason
+                    })
+                    logger.warning(f"    ✗ 삭제 실패: {failure_reason} - DB는 유지됨")
+            
+            logger.info(f"✓ 삭제 완료: RAGFlow {ragflow_deleted}개, DB {db_deleted}개, 실패 {ragflow_failed}개")
+            
+            # 결과 요약
+            logger.info("\n" + "="*80)
+            logger.info("삭제 작업 완료")
+            logger.info("-"*80)
+            logger.info(f"지식베이스: {dataset_name}")
+            logger.info(f"총 문서 수: {total_docs}")
+            logger.info(f"RAGFlow 삭제: {ragflow_deleted}개 (실패: {ragflow_failed}개)")
+            logger.info(f"RevisionDB 삭제: {db_deleted}개")
+            
+            if failed_items:
+                logger.warning(f"\n실패한 문서 목록:")
+                for item in failed_items[:10]:  # 최대 10개만 표시
+                    file_id_info = f", 파일ID: {item['file_id']}" if item.get('file_id') else ""
+                    logger.warning(f"  - {item['file_name']} (문서ID: {item['document_id']}{file_id_info}) - {item['reason']}")
+                if len(failed_items) > 10:
+                    logger.warning(f"  ... 외 {len(failed_items) - 10}개")
+            
+            logger.info("="*80)
+            
+            return {
+                'success': True,
+                'dataset_name': dataset_name,
+                'dataset_id': dataset_id,
+                'total_documents': total_docs,
+                'ragflow_deleted': ragflow_deleted,
+                'ragflow_failed': ragflow_failed,
+                'db_deleted': db_deleted,
+                'failed_items': failed_items
+            }
+        
+        except Exception as e:
+            logger.error(f"문서 삭제 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'message': str(e)
+            }
+    
+    def parse_non_failed_documents_by_dataset_name(self, dataset_name: str, monitor_progress: bool = True):
+        """
+        지식베이스 내 문서 상태를 확인하고, Failed('4')가 아닌 문서들을 파싱
+        (이미 완료('3')되거나 실행 중('1')인 문서는 제외하고 UNSTART('0'), CANCEL('2') 등 대상)
+        
+        Args:
+            dataset_name: 지식베이스 이름
+            monitor_progress: 파싱 진행 상황 모니터링 여부
+        """
+        logger.info("="*80)
+        logger.info(f"지식베이스 '{dataset_name}' 상태 기반 파싱 (Non-Failed)")
+        logger.info("="*80)
+        
+        try:
+            # 1. 지식베이스 조회
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return
+            
+            logger.info(f"문서 목록 조회 중... (Dataset ID: {dataset.get('id')})")
+            
+            # 2. 문서 목록 조회
+            all_documents = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=100)
+                if not docs:
+                    break
+                all_documents.extend(docs)
+                if len(docs) < 100:
+                    break
+                page += 1
+            
+            if not all_documents:
+                logger.warning("문서가 없습니다.")
+                return
+
+            logger.info(f"총 {len(all_documents)}개 문서 검사 시작")
+
+            # 3. 상태 필터링
+            # run status: '0': UNSTART, '1': RUNNING, '2': CANCEL, '3': DONE, '4': FAIL
+            target_ids = []
+            skipped_counts = {'RUNNING': 0, 'DONE': 0, 'FAIL': 0}
+            
+            for doc in all_documents:
+                run_status = str(doc.get('run', '0'))
+                doc_id = doc.get('id')
+                doc_name = doc.get('name', 'Unknown')
+                
+                if run_status == '4':  # FAIL
+                    skipped_counts['FAIL'] += 1
+                    logger.debug(f"  [Skip] Failed 상태: {doc_name}")
+                elif run_status == '3':  # DONE
+                    skipped_counts['DONE'] += 1
+                elif run_status == '1':  # RUNNING
+                    skipped_counts['RUNNING'] += 1
+                else:
+                    # '0' (UNSTART), '2' (CANCEL) 등
+                    target_ids.append(doc_id)
+                    logger.debug(f"  [Target] 파싱 대상 추가 (Status: {run_status}): {doc_name}")
+
+            logger.info("-" * 40)
+            logger.info(f"상태 검사 결과:")
+            logger.info(f"  - 파싱 대상 (UNSTART/CANCEL): {len(target_ids)}개")
+            logger.info(f"  - 건너뜀 (완료): {skipped_counts['DONE']}개")
+            logger.info(f"  - 건너뜀 (실행중): {skipped_counts['RUNNING']}개")
+            logger.info(f"  - 건너뜀 (실패 - 제외됨): {skipped_counts['FAIL']}개")
+            
+            if not target_ids:
+                logger.info("파싱할 대상 문서가 없습니다.")
+                return
+
+            # 4. 파싱 요청
+            logger.info(f"\n{len(target_ids)}개 문서 파싱 시작...")
+            parse_started = self.ragflow_client.start_batch_parse(
+                dataset,
+                document_ids=target_ids
+            )
+            
+            if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
+                self.monitor_parse_progress(dataset, dataset_name, target_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+            elif parse_started:
+                logger.info(f"[{dataset_name}] 파싱이 백그라운드에서 진행됩니다.")
+
+        except Exception as e:
+            logger.error(f"작업 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def cancel_parsing_documents_by_dataset_name(self, dataset_name: str, confirm: bool = False):
+        """
+        특정 데이터셋의 파싱 중인(RUNNING) 문서를 파싱 취소
+        
+        Args:
+            dataset_name: 지식베이스 이름
+            confirm: 실제 실행 여부 확인 플래그
+        """
+        logger.info("="*80)
+        logger.info(f"지식베이스 '{dataset_name}' 파싱 취소 (Running 상태 문서)")
+        logger.info("="*80)
+        
+        try:
+            # 1. 지식베이스 조회
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return
+            
+            logger.info(f"문서 목록 조회 중... (Dataset ID: {dataset.get('id')})")
+            
+            # 2. 문서 목록 조회
+            all_documents = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=100)
+                if not docs:
+                    break
+                all_documents.extend(docs)
+                if len(docs) < 100:
+                    break
+                page += 1
+            
+            if not all_documents:
+                logger.warning("문서가 없습니다.")
+                return
+
+            # 3. RUNNING 상태 문서 필터링
+            running_ids = []
+            
+            for doc in all_documents:
+                # run status: '1': RUNNING
+                run_status = str(doc.get('run', '0'))
+                doc_id = doc.get('id')
+                doc_name = doc.get('name', 'Unknown')
+                
+                if run_status == '1':  # RUNNING
+                    running_ids.append(doc_id)
+                    logger.debug(f"  [Running] 파싱 취소 대상: {doc_name}")
+            
+            logger.info("-" * 40)
+            logger.info(f"검사 결과:")
+            logger.info(f"  - 파싱 중(Running) 문서: {len(running_ids)}개")
+            
+            if not running_ids:
+                logger.info("파싱 중인 문서가 없습니다.")
+                return
+            
+            if not confirm:
+                logger.info("\n실제로 파싱을 취소하려면 --confirm 옵션을 사용하세요.")
+                logger.info(f"  예: python run.py --cancel-parsing \"{dataset_name}\" --confirm")
+                return
+
+            # 4. 파싱 취소 요청
+            logger.info(f"\n{len(running_ids)}개 문서 파싱 취소 요청 중...")
+            if self.ragflow_client.stop_batch_parse(dataset, running_ids):
+                logger.info("✓ 파싱 취소 요청이 성공적으로 전송되었습니다.")
+            else:
+                logger.error("✗ 파싱 취소 요청 실패")
+
+        except Exception as e:
+            logger.error(f"작업 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def print_statistics(self):
         """처리 통계 출력"""
         logger.info("="*80)
@@ -898,5 +1502,131 @@ class BatchProcessor:
             success_rate = (self.stats['successful_uploads'] / self.stats['total_files']) * 100
             logger.info(f"업로드 성공률: {success_rate:.1f}%")
         
+        logger.info("-"*80)
+        
+        # 다운로드 캐시 통계
+        try:
+            db_stats = self.revision_db.get_statistics()
+            cached_downloads = db_stats.get('cached_downloads', 0)
+            if cached_downloads > 0:
+                logger.info(f"다운로드 캐시: {cached_downloads}개 URL 캐시됨")
+                logger.info("-"*80)
+        except Exception as e:
+            logger.debug(f"다운로드 캐시 통계 조회 실패: {e}")
+        
         logger.info("="*80)
+
+    def sync_dataset_with_db(self, dataset_name: str, fix: bool = False) -> Dict:
+        """
+        RAGFlow Dataset과 RevisionDB 간의 데이터 정합성 검사 및 동기화
+        
+        Args:
+            dataset_name: 데이터셋 이름
+            fix: True이면 불일치 항목 자동 수정 (RAGFlow에서 고아 문서 삭제)
+            
+        Returns:
+            검사 결과 (orphans, ghosts 등)
+        """
+        logger.info("="*80)
+        logger.info(f"데이터 정합성 검사 (Sync Check): {dataset_name}")
+        logger.info("="*80)
+        
+        result = {
+            'success': False,
+            'ragflow_count': 0,
+            'db_count': 0,
+            'orphans': [],  # RAGFlow에만 있음 (삭제 대상)
+            'ghosts': [],   # DB에만 있음 (DB에서 삭제 대상)
+            'fixed_count': 0
+        }
+        
+        try:
+            # 1. RAGFlow 데이터 조회
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return result
+                
+            dataset_id = dataset.get('id')
+            logger.info(f"RAGFlow 문서 목록 조회 중... (Dataset ID: {dataset_id})")
+            
+            ragflow_docs = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=100)
+                if not docs:
+                    break
+                ragflow_docs.extend(docs)
+                if len(docs) < 100:
+                    break
+                page += 1
+            
+            result['ragflow_count'] = len(ragflow_docs)
+            ragflow_map = {d['id']: d for d in ragflow_docs}
+            logger.info(f"✓ RAGFlow 문서: {len(ragflow_docs)}개")
+            
+            # 2. RevisionDB 데이터 조회
+            logger.info("RevisionDB 문서 목록 조회 중...")
+            db_docs = self.revision_db.get_documents_by_dataset_name(dataset_name)
+            result['db_count'] = len(db_docs)
+            db_map = {d['document_id']: d for d in db_docs}
+            logger.info(f"✓ RevisionDB 문서: {len(db_docs)}개")
+            
+            # 3. 불일치 분석
+            # Orphans: RAGFlow에는 있는데 DB에는 없는 것 (삭제해야 함)
+            for doc_id, doc in ragflow_map.items():
+                if doc_id not in db_map:
+                    result['orphans'].append({
+                        'id': doc_id,
+                        'name': doc.get('name')
+                    })
+            
+            # Ghosts: DB에는 있는데 RAGFlow에는 없는 것 (DB에서 삭제해야 함)
+            for doc_id, doc in db_map.items():
+                if doc_id not in ragflow_map:
+                    result['ghosts'].append({
+                        'id': doc_id,
+                        'key': doc.get('document_key'),
+                        'name': doc.get('file_name')
+                    })
+            
+            logger.info("-" * 40)
+            logger.info(f"분석 결과:")
+            logger.info(f"  - 정상 매칭: {len(ragflow_docs) - len(result['orphans'])}개")
+            logger.info(f"  - 고아 문서 (RAGFlow Only): {len(result['orphans'])}개 {'(삭제 필요)' if result['orphans'] else ''}")
+            logger.info(f"  - 유령 문서 (DB Only): {len(result['ghosts'])}개 {'(DB 정리 필요)' if result['ghosts'] else ''}")
+            
+            # 4. 수정 (Fix)
+            if fix and (result['orphans'] or result['ghosts']):
+                logger.info("-" * 40)
+                logger.info("자동 복구(Fix) 시작...")
+                
+                # 고아 문서 삭제 (RAGFlow에서 삭제)
+                for item in result['orphans']:
+                    doc_id = item['id']
+                    doc_name = item['name']
+                    if self.ragflow_client.delete_document(dataset, doc_id):
+                        logger.info(f"  ✓ 고아 문서 삭제됨: {doc_name} ({doc_id})")
+                        result['fixed_count'] += 1
+                    else:
+                        logger.error(f"  ✗ 고아 문서 삭제 실패: {doc_name}")
+                
+                # 유령 문서 삭제 (DB에서 삭제)
+                for item in result['ghosts']:
+                    doc_id = item['id']
+                    doc_key = item['key']
+                    # 유령 문서는 이미 RAGFlow에 없으므로 안전하게 삭제 가능
+                    self.revision_db.delete_document(doc_key, dataset_id, item['name'])
+                    logger.info(f"  ✓ DB 유령 레코드 삭제됨: {item['name']} ({doc_key})")
+                    result['fixed_count'] += 1
+                
+                logger.info("복구 완료")
+            
+            result['success'] = True
+            return result
+            
+        except Exception as e:
+            logger.error(f"동기화 검사 중 오류: {e}")
+            return result
+
 

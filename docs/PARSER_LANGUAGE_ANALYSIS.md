@@ -13,7 +13,7 @@
 ```python
 # 언어 및 파싱 방법 설정 (기본값 사용)
 lang = "korean"  # 한국어 기본값, 필요에 따라 변경
-parse_method = "auto"  # 자동 감지, 필요에 따라 "txt" 또는 "ocr"로 변경 가능
+chunk_method = "auto"  # 자동 감지, 필요에 따라 "txt" 또는 "ocr"로 변경 가능
 ```
 
 **이미지 파싱 (505번째 줄):**

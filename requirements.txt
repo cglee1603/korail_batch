@@ -55,3 +55,9 @@ pyodbc>=5.0.0; platform_system=="Windows"
 # cx_oracle>=8.3.0
 
 # SQLite is built-in to Python
+
+# ==================== API Server (Optional) ====================
+# FastAPI for REST API
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.5.0

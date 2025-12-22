@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from urllib.parse import quote
 
 # 환경변수 로드
 load_dotenv()
@@ -11,9 +12,8 @@ load_dotenv()
 # 프로젝트 루트 디렉토리
 ROOT_DIR = Path(__file__).parent
 
-# Management API 설정 (RAGFlow API Key 대신 사용자명/비밀번호 사용)
-MANAGEMENT_USERNAME = os.getenv("MANAGEMENT_USERNAME", "admin")
-MANAGEMENT_PASSWORD = os.getenv("MANAGEMENT_PASSWORD", "12345678")
+# RAGFlow HTTP API 설정
+RAGFLOW_API_KEY = os.getenv("RAGFLOW_API_KEY", "")
 RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "http://localhost:5000")
 
 # 지식베이스 권한 설정
@@ -27,7 +27,7 @@ EMBEDDING_MODEL = None  # 항상 None 사용 - 서버가 tenant.embd_id 자동 �
 
 # ==================== Parser 설정 (GUI와 동일하게) ====================
 
-# 청크 분할 방법
+# 파싱 방법 (CHUNK_METHOD)
 # - "naive": 일반 텍스트 분할 (기본값)
 # - "qa": Q&A 형식
 # - "manual": 수동 분할
@@ -101,6 +101,8 @@ DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./data/downloads"))
 TEMP_DIR = Path(os.getenv("TEMP_DIR", "./data/temp"))
 LOG_DIR = Path(os.getenv("LOG_DIR", "./logs"))
 
+FILE_SYSTEM_PATH = os.getenv("FILE_SYSTEM_PATH","./data/filesystem")
+
 # 스케줄 설정
 BATCH_SCHEDULE = os.getenv("BATCH_SCHEDULE", "10:00")
 
@@ -120,6 +122,20 @@ SUPPORTED_EXTENSIONS = {
 # 변환이 필요한 파일 형식
 CONVERT_TO_PDF = ['hwp']
 EXTRACT_ARCHIVE = ['zip']
+
+# PDF 분할 설정 (MB 단위, 0이면 비활성화)
+PDF_SPLIT_SIZE_MB = int(os.getenv("PDF_SPLIT_SIZE_MB", "120"))
+
+# PDF 분할 설정 (페이지 수 단위, 0이면 비활성화)
+PDF_SPLIT_MAX_PAGES = int(os.getenv("PDF_SPLIT_MAX_PAGES", "0"))
+
+# HWP 변환용 Python 인터프리터 경로 (Linux 전용)
+# 가상환경을 사용하는 경우 가상환경의 python 경로를 지정하세요
+# 예: /home/minds/libre-converter/venv/bin/python
+HWP_CONVERTER_PYTHON = os.getenv("HWP_CONVERTER_PYTHON", "python")
+
+# HWP 변환 스크립트 경로 (Linux 전용)
+HWP_CONVERTER_SCRIPT = os.getenv("HWP_CONVERTER_SCRIPT", "/home/minds/libre-converter/test_conversion.py")
 
 # ==================== 데이터베이스 설정 ====================
 
@@ -149,7 +165,7 @@ else:
     DB_METADATA_COLUMNS = []
 
 # 데이터 소스 선택
-DATA_SOURCE = os.getenv("DATA_SOURCE", "excel")  # "excel", "db", "both"
+DATA_SOURCE = os.getenv("DATA_SOURCE", "excel")  # "excel", "db", "filesystem" 또는 콤마로 구분된 조합 (예: "excel,db")
 
 # 파싱 진행 상황 모니터링 설정
 MONITOR_PARSE_PROGRESS = os.getenv("MONITOR_PARSE_PROGRESS", "false").lower() == "true"
@@ -164,6 +180,43 @@ SKIP_SAME_REVISION = os.getenv("SKIP_SAME_REVISION", "true").lower() == "true"
 
 # 삭제 순서 (True: 삭제→업로드, False: 업로드→삭제)
 DELETE_BEFORE_UPLOAD = os.getenv("DELETE_BEFORE_UPLOAD", "true").lower() == "true"
+
+# ==================== 히스토리/소프트웨어 시트 퍼지 설정 ====================
+# 업로드 전 데이터셋 전량 삭제(문서+연결 파일) 수행 여부
+PURGE_BEFORE_HISTORY_SOFTWARE = os.getenv("PURGE_BEFORE_HISTORY_SOFTWARE", "true").lower() == "true"
+
+# Revision DB 연결 문자열 (PostgreSQL)
+# 우선순위:
+# 1) REVISION_DB_CONNECTION_STRING 사용
+# 2) 구성요소(REVISION_DB_HOST/PORT/NAME/USER/PASSWORD)로 안전하게 조립
+def _build_revision_db_connection_string() -> str:
+    # 1) 전체 문자열이 주어지면 그대로 사용(사용자가 직접 % 인코딩 가능)
+    full = os.getenv("REVISION_DB_CONNECTION_STRING")
+    if full and full.strip():
+        return full.strip()
+
+    # 2) 구성요소 기반 조립 (자격증명은 URL 인코딩)
+    host = os.getenv("REVISION_DB_HOST")
+    if host:
+        port = os.getenv("REVISION_DB_PORT", "5432")
+        dbname = os.getenv("REVISION_DB_NAME", "ragflow_revision")
+        user = os.getenv("REVISION_DB_USER", "")
+        password = os.getenv("REVISION_DB_PASSWORD", "")
+        enc_user = quote(user or "", safe="")
+        enc_password = quote(password or "", safe="")
+        return f"postgresql://{enc_user}:{enc_password}@{host}:{port}/{dbname}"
+
+    # 3) 최종 기본값
+    return "postgresql://ragflow:ragflow@localhost:5432/ragflow_revision"
+
+REVISION_DB_CONNECTION_STRING = _build_revision_db_connection_string()
+
+# ==================== 지식베이스 분할 설정 ====================
+# 시트별 지식베이스당 최대 문서 수
+# 문서가 이 개수를 초과하면 새로운 지식베이스(part)를 생성합니다
+# 예: 시트에 250개 문서가 있고 MAX_DOCUMENTS_PER_DATASET=100이면
+#     "시트명_part1" (100개), "시트명_part2" (100개), "시트명_part3" (50개)로 분할
+MAX_DOCUMENTS_PER_DATASET = int(os.getenv("MAX_DOCUMENTS_PER_DATASET", "100"))
 
 # ==================== 시트 타입 감지 키워드 ====================
 SHEET_TYPE_KEYWORDS = {
@@ -228,3 +281,23 @@ DB_PASSWORD = ""
 DB_DRIVER = ""
 DB_FILE_PATH_COLUMN = ""  # 방식 B만 사용하므로 제거
 
+# ==================== 암복호화 설정 ====================
+# 암복호화 기능 활성화 여부
+ENABLE_DECRYPTION = os.getenv("ENABLE_DECRYPTION", "false").lower() == "true"
+
+# Java 실행 파일 경로
+JAVA_EXECUTABLE = os.getenv("JAVA_EXECUTABLE", "java")
+
+# 암복호화 JAR 파일 경로
+DECRYPTION_JAR_PATH = os.getenv("DECRYPTION_JAR_PATH", "")
+
+# 암복호화 클래스명
+DECRYPTION_CLASS = os.getenv("DECRYPTION_CLASS", "Dec")  # 복호화 클래스
+CHECK_CLASS = os.getenv("CHECK_CLASS", "")  # 암호화 체크 클래스 (옵션)
+
+# 복호화된 파일 저장 디렉토리
+DECRYPTED_DIR = DOWNLOAD_DIR / "decrypted"
+DECRYPTED_DIR.mkdir(parents=True, exist_ok=True)
+
+# 복호화 타임아웃 (초)
+DECRYPTION_TIMEOUT = int(os.getenv("DECRYPTION_TIMEOUT", "60"))

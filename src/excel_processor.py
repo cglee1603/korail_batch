@@ -2,11 +2,13 @@
 엑셀 파일 처리 모듈
 시트별 헤더 자동 감지, 하이퍼링크 추출, 숨김 행 제외, 시트 타입 감지
 """
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 from enum import Enum
+import re
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.cell.cell import Cell
 from logger import logger
 from config import (
@@ -33,6 +35,10 @@ class ExcelProcessor:
     def __init__(self, excel_path: str):
         self.excel_path = Path(excel_path)
         self.workbook = None
+        # data_only=True로 로드한 워크북(수식의 계산된 값 접근용, 지연 로드)
+        self._workbook_data_only = None
+        # 시트별 컬럼 숨김 캐시: { sheet_name: {col_idx: bool_hidden} }
+        self._sheet_col_hidden_map: Dict[str, Dict[int, bool]] = {}
         
     def load_workbook(self):
         """엑셀 파일 로드"""
@@ -48,13 +54,31 @@ class ExcelProcessor:
             logger.error(f"엑셀 파일 로드 실패: {e}")
             return False
     
+    def _ensure_data_only_workbook(self):
+        """
+        data_only=True로 계산된 값을 담은 워크북을 지연 로드한다.
+        - 수식 셀의 '값'을 읽고 싶을 때 사용 (Excel에서 계산 후 저장된 캐시 값이 있어야 함)
+        """
+        if self._workbook_data_only is not None:
+            return
+        try:
+            self._workbook_data_only = openpyxl.load_workbook(
+                self.excel_path,
+                data_only=True,
+                keep_vba=False
+            )
+            logger.debug("data_only 워크북 로드 완료 (수식 캐시 값 접근용)")
+        except Exception as e:
+            logger.debug(f"data_only 워크북 로드 실패: {e}")
+            self._workbook_data_only = None
+    
     def get_sheet_names(self) -> List[str]:
         """모든 시트 이름 반환"""
         if not self.workbook:
             return []
         return self.workbook.sheetnames
     
-    def detect_header_row(self, sheet: Worksheet) -> int:
+    def detect_header_row(self, sheet: Worksheet) -> Tuple[int, int]:
         """
         헤더 행 자동 감지 (개선된 로직)
         
@@ -68,69 +92,527 @@ class ExcelProcessor:
         candidates = []
         
         for row_idx in range(1, max_search_row):
-            row = list(sheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
-            
-            # 비어있지 않은 셀 개수
-            non_empty_cells = [cell for cell in row if cell is not None and str(cell).strip()]
-            non_empty_count = len(non_empty_cells)
-            
+            # 숨김 행은 스킵
+            if self.is_row_hidden(sheet, row_idx):
+                logger.debug(f"{row_idx}행 점수: 스킵(숨김 행)")
+                continue
+
+            visible_values: List[str] = []
+            visible_values_for_analysis: List[str] = []
+
+            # 숨김 컬럼은 제외하고 값 수집
+            sheet_max_col = sheet.max_column or 1
+            for col_idx in range(1, sheet_max_col + 1):
+                if self.is_col_hidden(sheet, col_idx):
+                    continue
+                val = self._get_merged_top_left_value(sheet, row_idx, col_idx)
+                if val is None:
+                    continue
+                cell_str = str(val).strip()
+                if not cell_str:
+                    continue
+                visible_values.append(cell_str)
+                if len(visible_values_for_analysis) < 10:
+                    visible_values_for_analysis.append(cell_str)
+
+            # '목차로 되돌아가기'가 포함된 행은 헤더 후보에서 제외
+            try:
+                if any("목차로 되돌아가기" in v for v in visible_values_for_analysis) or \
+                   any("목차로 되돌아가기" in v for v in visible_values):
+                    logger.debug(f"{row_idx}행 점수: 스킵(목차로 되돌아가기 포함)")
+                    continue
+            except Exception:
+                pass
+
+            non_empty_count = len(visible_values)
+
             # 최소 3개 이상의 값이 있어야 함
             if non_empty_count < 3:
+                logger.debug(f"{row_idx}행 점수: 스킵(비어있지 않은 셀 {non_empty_count}개 < 3)")
                 continue
-            
+
             # 헤더 점수 계산
             score = 0
-            
+
             # 1. 비어있지 않은 셀이 많을수록 점수 증가
             score += non_empty_count
-            
-            # 2. 헤더 특성 분석
-            for cell in non_empty_cells[:10]:  # 처음 10개 컬럼만 분석
-                cell_str = str(cell).strip()
-                
+            # 2. 헤더 특성 분석 (숨김 컬럼 제외한 선두 10개 값 기준)
+            for cell_str in visible_values_for_analysis:
                 # 괄호가 있으면 헤더일 가능성 높음 (예: "년도(1)")
                 if '(' in cell_str and ')' in cell_str:
                     score += 5
-                
+
                 # 단순 숫자 1~2자리면 제목일 가능성 높음 (감점)
                 if cell_str.isdigit() and len(cell_str) <= 2:
                     score -= 3
-                
+
                 # 일반적인 헤더 키워드
                 header_keywords = ['년도', '제목', '구분', '번호', '이름', '코드', '상태', 
                                  '날짜', '작성', '담당', '버전', 'WBS', '종별', '관리']
                 if any(keyword in cell_str for keyword in header_keywords):
                     score += 3
-                
+
                 # 너무 긴 텍스트는 제목일 가능성 높음 (감점)
                 if len(cell_str) > 30:
                     score -= 2
-            
-            # 3. 다음 행에 데이터가 있는지 확인
+
+            # 3. 다음 (가시) 행에 데이터가 있는지 확인
             if row_idx < sheet.max_row:
-                next_row = list(sheet.iter_rows(min_row=row_idx+1, max_row=row_idx+1, values_only=True))[0]
-                next_non_empty = sum(1 for cell in next_row if cell is not None and str(cell).strip())
-                
-                # 다음 행에도 비슷한 개수의 데이터가 있으면 헤더일 가능성 높음
-                if next_non_empty >= non_empty_count * 0.5:
-                    score += 3
-            
+                next_row_idx = row_idx + 1
+                # 바로 다음 행이 숨김이면 '다음 행' 평가는 생략
+                if not self.is_row_hidden(sheet, next_row_idx):
+                    next_non_empty = 0
+                    for col_idx in range(1, sheet_max_col + 1):
+                        if self.is_col_hidden(sheet, col_idx):
+                            continue
+                        val = self._get_merged_top_left_value(sheet, next_row_idx, col_idx)
+                        if val is None:
+                            continue
+                        if str(val).strip():
+                            next_non_empty += 1
+                    # 다음 행에도 비슷한 개수의 데이터가 있으면 헤더일 가능성 높음
+                    if next_non_empty >= non_empty_count * 0.5:
+                        score += 3
+
             candidates.append((row_idx, score, non_empty_count))
-            logger.debug(f"{row_idx}행 점수: {score} (비어있지 않은 셀: {non_empty_count}개)")
+            logger.debug(f"{row_idx}행 점수: {score} (비어있지 않은 셀: {non_empty_count}개, 숨김 제외)")
         
-        # 가장 높은 점수의 행을 헤더로 선택
+        # 가장 높은 점수의 행을 헤더로 선택 후, 해당 행의 마지막 의미 있는 컬럼을 max_col로 산출
+        def compute_max_col(row_idx: int) -> int:
+            sheet_max_col = sheet.max_column or 1
+            last_col = 1
+            for c in range(sheet_max_col, 0, -1):
+                if self.is_col_hidden(sheet, c):
+                    continue
+                val = self._get_merged_top_left_value(sheet, row_idx, c)
+                norm = self._normalize_text(val)
+                if norm and not self._starts_with_legend_marker(norm):
+                    last_col = c
+                    break
+            return last_col
+
         if candidates:
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_row, best_score, best_count = candidates[0]
+            max_col = compute_max_col(best_row)
             logger.info(f"헤더 행 감지: {best_row}행 (점수: {best_score}, 비어있지 않은 셀: {best_count}개)")
-            return best_row
-        
+            return best_row, max_col
+
         # 기본값: 1행
         logger.warning("헤더 행을 찾지 못했습니다. 1행을 헤더로 사용합니다.")
-        return 1
+        return 1, (sheet.max_column or 1)
     
+    # ----- 계층형/병합 헤더 지원 유틸 -----
+    def _get_merged_top_left_value(self, sheet: Worksheet, row: int, col: int) -> Optional[str]:
+        """
+        해당 좌표가 병합영역이면 좌상단 셀 값을 반환, 아니면 현재 셀 값
+        (수정: 병합 영역 내라도 현재 셀에 값이 있으면 그 값을 우선 반환 - 헤더 오버라이딩 지원)
+        """
+        cell = sheet.cell(row=row, column=col)
+        # 1. 현재 셀에 값이 있으면 우선 사용 (병합된 영역 내 숨겨진 값 읽기 용도)
+        if cell.value is not None:
+            return str(cell.value)
+
+        # 2. 값이 없으면 병합 정보 확인하여 좌상단 값 가져오기
+        coord = cell.coordinate
+        for mrange in sheet.merged_cells.ranges:
+            if coord in mrange:
+                top_left = sheet.cell(row=mrange.min_row, column=mrange.min_col)
+                return None if top_left.value is None else str(top_left.value)
+        
+        return None
+    
+    def _get_merged_top_left_value_evaluated(self, sheet: Worksheet, row: int, col: int) -> Optional[str]:
+        """
+        병합 좌상단 기준으로 '계산된 값(data_only)'을 우선 반환한다.
+        - data_only 워크북이 없거나 값이 없으면 기존 값으로 폴백.
+        """
+        try:
+            self._ensure_data_only_workbook()
+            if self._workbook_data_only is not None:
+                d_sheet = self._workbook_data_only[sheet.title]
+                d_cell = d_sheet.cell(row=row, column=col)
+                
+                # 1. 현재 셀 값 우선 확인 (하위 헤더 오버라이딩 지원)
+                if d_cell.value is not None:
+                    return str(d_cell.value)
+
+                # 2. 병합 영역이면 좌상단 값 확인
+                coord = d_cell.coordinate
+                for mrange in d_sheet.merged_cells.ranges:
+                    if coord in mrange:
+                        tl = d_sheet.cell(row=mrange.min_row, column=mrange.min_col)
+                        return None if tl.value is None else str(tl.value)
+                        
+        except Exception as e:
+            logger.debug(f"_get_merged_top_left_value_evaluated 실패(row={row}, col={col}): {e}")
+        # 폴백: 기존(수식 문자열 포함 가능)
+        return self._get_merged_top_left_value(sheet, row, col)
+
+    def _row_non_empty_count(self, sheet: Worksheet, row: int, max_col: int) -> int:
+        count = 0
+        for col in range(1, max_col + 1):
+            if self.is_col_hidden(sheet, col):
+                continue
+            val = self._get_merged_top_left_value(sheet, row, col)
+            norm = self._normalize_text(val)
+            if norm and not self._starts_with_legend_marker(norm):
+                count += 1
+        return count
+
+    def _row_has_downward_merge_from(self, sheet: Worksheet, row: int) -> bool:
+        """row를 포함하면서 아래로 확장되는 병합이 있는지"""
+        for mrange in sheet.merged_cells.ranges:
+            if mrange.min_row <= row <= mrange.max_row and mrange.max_row > row:
+                return True
+        return False
+
+    def _make_unique_headers(self, headers: List[str]) -> List[str]:
+        seen: dict[str, int] = {}
+        unique: List[str] = []
+        for h in headers:
+            key = h or "Column"
+            if key not in seen:
+                seen[key] = 1
+                unique.append(key)
+            else:
+                seen[key] += 1
+                unique.append(f"{key} ({seen[key]})")
+        return unique
+
+    def _normalize_text(self, text: Optional[str]) -> Optional[str]:
+        if text is None:
+            return None
+        # 모든 공백류(줄바꿈, 탭 포함)를 단일 공백으로 정규화
+        s = " ".join(str(text).split())
+        return s if s else None
+
+    def _starts_with_legend_marker(self, text: str) -> bool:
+        """행/헤더 카운팅에서 제외할 범례/참고 표식 여부(선두 특수기호)
+        대괄호 등 헤더 그룹 표시는 유지하기 위해 과도한 범위는 피하고, 대표 표식만 필터링.
+        """
+        if not text:
+            return False
+        first = text[0]
+        legend_markers = set([
+            '※', '◎', '★', '☆', '●', '○', '■', '□', '◇', '◆', '▲', '△', '▼', '▽',
+            '▶', '▷', '▸', '▹', '•', '∙', '·', '–', '—'
+        ])
+        return first in legend_markers
+
+    def _is_symbolic_token(self, text: str) -> bool:
+        """
+        짧고(<=12), 공백 없고, 대문자/숫자/특수기호(-._) 위주인 토큰인지 검사
+        예: INV, TYPE1, FTM, SEGMENT 등
+        """
+        if not text:
+            return False
+        # 스마트쿼트 등 통일
+        text = str(text).replace("’", "'")
+        # 공백/개행/마침표는 라벨 내 구분자로 취급하여 제거 후 평가
+        # 예: "TDCS DU2" -> "TDCSDU2", "REV. TAG" -> "REVTAG"
+        condensed = re.sub(r"[ \t\r\n\.]", "", text)
+        # "TYPE 1"처럼 알파벳 + 공백 + 숫자 패턴도 동일하게 축약
+        if re.fullmatch(r"[A-Za-z]+\s+\d+", text):
+            condensed = re.sub(r"\s+", "", text)
+        # 허용 길이(공백/마침표 제거 기준)
+        if len(condensed) > 12:
+            return False
+        # 허용 문자: 영문/숫자/._-'/ (공백, 마침표는 위에서 제거된 상태)
+        if not re.fullmatch(r"[A-Za-z0-9._\-'/]+", condensed):
+            return False
+        # 숫자만은 제외
+        if condensed.isdigit():
+            return False
+        # 날짜/시간 패턴 간단 배제
+        if re.search(r"\d{4}-\d{2}-\d{2}", condensed) or re.search(r"\d{2}/\d{1,2}/\d{1,2}", condensed):
+            return False
+        # 대문자 비율(알파 기준) 체크
+        letters = [c for c in condensed if c.isalpha()]
+        if letters:
+            upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+            if upper_ratio < 0.6:
+                return False
+        return True
+
+    def _is_likely_symbolic_subheader_row(self, sheet: Worksheet, row: int, max_col: int) -> bool:
+        """
+        다음 행이 상징적 토큰들로 구성된 '부-헤더' 라인인지 휴리스틱으로 판정
+        - 비어있지 않은 셀 수: 2~(max_col의 1/2) 범위
+        - 비어있지 않은 값 중 80% 이상이 상징 토큰
+        """
+        non_empty = []
+        for c in range(1, max_col + 1):
+            if self.is_col_hidden(sheet, c):
+                continue
+            val = self._get_merged_top_left_value(sheet, row, c)
+            norm = self._normalize_text(val)
+            if norm:
+                non_empty.append(norm)
+        count = len(non_empty)
+        if count < 2:
+            return False
+        if count > max(3, max_col // 2):
+            return False
+        symbolic = sum(1 for v in non_empty if self._is_symbolic_token(v))
+        logger.info(f"row {row} symbolic {symbolic} count {count}, result {symbolic >= max(1, int(0.6 * count))}")
+        return symbolic >= max(1, int(0.6 * count))
+
+    def build_headers_and_data_start(self, sheet: Worksheet) -> Tuple[List[str], int, Tuple[int, int]]:
+        """
+        병합/다단 헤더를 고려하여 헤더를 생성하고 데이터 시작 행을 반환
+        
+        Returns:
+            (headers, data_start_row, (header_start_row, header_end_row))
+        """
+        base_header_row, max_col = self.detect_header_row(sheet)
+
+        include_prev = False
+        include_next = False
+
+        if base_header_row > 1:
+            prev_non_empty = self._row_non_empty_count(sheet, base_header_row - 1, max_col)
+            include_prev = prev_non_empty >= 2
+
+        header_start = base_header_row - 1 if include_prev else base_header_row
+        
+        # 헤더 아래쪽 확장: 병합이 이어지거나 부-헤더(상징 토큰) 행이면 계속 포함
+        header_end = base_header_row
+        max_extension = 3  # 최대 3행까지 추가 확장
+        extension_count = 0
+        
+        while extension_count < max_extension:
+            next_row = header_end + 1
+            if next_row > (sheet.max_row or next_row):
+                break
+            
+            should_extend = False
+            # 1. 현재 행에서 아래로 확장되는 병합이 있는지
+            if self._row_has_downward_merge_from(sheet, header_end):
+                should_extend = True
+            # 2. 또는 다음 행이 상징적 부-헤더 행인지
+            elif self._is_likely_symbolic_subheader_row(sheet, next_row, max_col):
+                should_extend = True
+            
+            if should_extend:
+                header_end = next_row
+                extension_count += 1
+            else:
+                break
+
+        logger.info(f"header range: {header_start}~{header_end}")
+        # 2-1) 헤더 후보 행 집합 구성
+        header_rows = list(range(header_start, header_end + 1))
+        # 2-2) '목차로 되돌아가기' 규칙 적용: 해당 문구가 있는 행과 그 직전 행은 헤더에서 제외
+        def row_contains_markers(r: int) -> bool:
+            markers = ["목차로 되돌아가기"]
+            for c in range(1, max_col + 1):
+                val = self._get_merged_top_left_value(sheet, r, c)
+                norm = self._normalize_text(val)
+                if not norm:
+                    continue
+                for m in markers:
+                    if m in norm:
+                        return True
+            return False
+
+        marker_rows = {r for r in header_rows if row_contains_markers(r)}
+        exclude_rows = set(marker_rows)
+        for r in marker_rows:
+            if r - 1 >= 1:
+                exclude_rows.add(r - 1)
+        header_rows = [r for r in header_rows if r not in exclude_rows]
+        # 2-3) 모두 제외되었다면, 기준 행이 제외된 경우를 피해서 대체 행 선택
+        if not header_rows:
+            # 기준 행이 제외되었다면 그 다음 행을 시도, 그렇지 않으면 기준 행 사용
+            candidate = base_header_row + 1 if base_header_row in exclude_rows else base_header_row
+            # 시트 범위 내 보정
+            if candidate > (sheet.max_row or candidate):
+                candidate = base_header_row
+            header_rows = [candidate]
+        # 2-4) 하드코딩 없이 '상징 토큰'으로 구성된 부-헤더 행을 추가로 포함 (최대 2행)
+        tail = max(header_rows)
+        for r in range(tail + 1, min(tail + 3, (sheet.max_row or tail) + 1)):
+            if self._is_likely_symbolic_subheader_row(sheet, r, max_col):
+                header_rows.append(r)
+            else:
+                break
+        headers: List[str] = []
+
+        for col in range(1, max_col + 1):
+            if self.is_col_hidden(sheet, col):
+                continue
+            parts: List[str] = []
+            for row in header_rows:
+                val = self._get_merged_top_left_value(sheet, row, col)
+                norm = self._normalize_text(val)
+                if norm:
+                    if not parts or parts[-1] != norm:
+                        parts.append(norm)
+            header_name = ' - '.join(parts) if parts else f"Column_{col}"
+            headers.append(header_name)
+
+        headers = self._make_unique_headers(headers)
+        data_start_row = max(header_rows) + 1
+        # 2-5) 헤더 직후 비어있는(또는 숨김) 행들을 건너뛰고 첫 유효 데이터 행으로 보정
+        row_probe = data_start_row
+        while row_probe <= (sheet.max_row or row_probe):
+            # 숨김 행이면 계속 진행
+            if self.is_row_hidden(sheet, row_probe):
+                row_probe += 1
+                continue
+            # 내용이 하나도 없으면 계속 진행
+            if self._row_non_empty_count(sheet, row_probe, max_col) == 0:
+                row_probe += 1
+                continue
+            break
+        data_start_row = row_probe
+        logger.info(f"헤더 범위: {min(header_rows)}~{max(header_rows)}행 (기준: {base_header_row}행)")
+        logger.info(f"헤더: {headers}")
+
+        return headers, data_start_row, (min(header_rows), max(header_rows))
+
+    def _prepare_col_hidden_cache(self, sheet: Worksheet):
+        """
+        openpyxl의 column_dimensions를 한 번 훑어 범위(min..max) 단위의 숨김 설정을 캐시한다.
+        XML 파싱 없이 dim의 범위 속성(min/max)과 단일 컬럼 속성을 모두 반영한다.
+        """
+        sheet_name = sheet.title
+        if sheet_name in self._sheet_col_hidden_map:
+            return
+        hidden_map: Dict[int, bool] = {}
+        max_col = sheet.max_column or 1
+        # 기본값: 모두 False
+        for i in range(1, max_col + 1):
+            hidden_map[i] = False
+        try:
+            for key, dim in sheet.column_dimensions.items():
+                if dim is None:
+                    continue
+                # 범위 우선(min..max). openpyxl이 보존한 경우에 한함
+                min_idx = getattr(dim, 'min', None)
+                max_idx = getattr(dim, 'max', None)
+                if isinstance(min_idx, int) and isinstance(max_idx, int) and min_idx >= 1 and max_idx >= min_idx:
+                    is_hidden = bool(getattr(dim, 'hidden', False))
+                    width_val = getattr(dim, 'width', None)
+                    if not is_hidden and (width_val is not None):
+                        try:
+                            if float(width_val) == 0 or float(width_val) <= 0.2:
+                                is_hidden = True
+                        except Exception:
+                            pass
+                    if is_hidden:
+                        for ci in range(min_idx, min(max_idx, max_col) + 1):
+                            hidden_map[ci] = True
+                        logger.debug(f"[col_cache] 범위 {min_idx}-{max_idx} hidden=True 적용")
+                    continue
+                # 단일 컬럼(키가 문자 인덱스) 처리
+                try:
+                    col_idx = column_index_from_string(key)
+                except Exception:
+                    # 키가 문자형이 아닐 수 있음. 이 경우는 스킵
+                    continue
+                is_hidden = bool(getattr(dim, 'hidden', False))
+                width_val = getattr(dim, 'width', None)
+                if not is_hidden and (width_val is not None):
+                    try:
+                        if float(width_val) == 0 or float(width_val) <= 0.2:
+                            is_hidden = True
+                    except Exception:
+                        pass
+                # 윤곽 접힘도 보수적으로 반영
+                if not is_hidden:
+                    outline_level = getattr(dim, 'outlineLevel', 0) or 0
+                    collapsed = getattr(dim, 'collapsed', False)
+                    if outline_level and collapsed:
+                        is_hidden = True
+                if is_hidden:
+                    hidden_map[col_idx] = True
+        except Exception as e:
+            logger.debug(f"_prepare_col_hidden_cache 실패(sheet='{sheet_name}'): {e}")
+        self._sheet_col_hidden_map[sheet_name] = hidden_map
+
+    def is_col_hidden(self, sheet: Worksheet, col_idx: int) -> bool:
+        try:
+            # 캐시 우선
+            self._prepare_col_hidden_cache(sheet)
+            cached = self._sheet_col_hidden_map.get(sheet.title, {}).get(col_idx, False)
+            if cached:
+                return True
+            letter = get_column_letter(col_idx)
+            dim = sheet.column_dimensions.get(letter)
+            if dim is None:
+                # 인접 컬럼의 그룹 접힘(collapse) 영향으로 사실상 비가시일 수 있음 (보수적 처리)
+                try:
+                    for offset in (-1, 1):
+                        adj_idx = col_idx + offset
+                        if adj_idx < 1:
+                            continue
+                        adj_letter = get_column_letter(adj_idx)
+                        adj_dim = sheet.column_dimensions.get(adj_letter)
+                        if adj_dim and getattr(adj_dim, 'collapsed', False) and getattr(adj_dim, 'outlineLevel', 0):
+                            logger.debug(f"[is_col_hidden] 컬럼 {letter}: 인접 {adj_letter} collapsed=True (outlineLevel={getattr(adj_dim,'outlineLevel', None)}) → 숨김 취급")
+                            return True
+                except Exception as e:
+                    logger.debug(f"[is_col_hidden] 컬럼 {letter}: 인접 컬럼 검사 중 오류: {e}")
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: dimension 항목 없음 (sheet='{sheet.title}')")
+                return False
+            # 명시적 숨김
+            if getattr(dim, 'hidden', False):
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: dim.hidden=True 로 숨김 판정")
+                return True
+            # 너비 0
+            if getattr(dim, 'width', None) == 0:
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: dim.width=0 로 숨김 판정")
+                return True
+            # 보수적 확장: 극소 너비도 숨김으로 간주
+            width = getattr(dim, 'width', None)
+            if width is not None and isinstance(width, (int, float)) and width <= 0.2:
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: dim.width={width} <= 0.2 (사실상 비가시) → 숨김 판정")
+                return True
+            # 보수적 확장: 윤곽/그룹 접힘 상태 고려
+            outline_level = getattr(dim, 'outlineLevel', 0) or 0
+            collapsed = getattr(dim, 'collapsed', False)
+            if outline_level and collapsed:
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: outlineLevel={outline_level}, collapsed=True → 숨김 판정")
+                return True
+            if outline_level:
+                # 인접 컬럼이 동일/상위 레벨에서 collapsed인 경우, 현재 컬럼도 접힘에 포함된 것으로 간주
+                try:
+                    for offset in (-1, 1):
+                        adj_idx = col_idx + offset
+                        if adj_idx < 1:
+                            continue
+                        adj_letter = get_column_letter(adj_idx)
+                        adj_dim = sheet.column_dimensions.get(adj_letter)
+                        if not adj_dim:
+                            continue
+                        adj_collapsed = getattr(adj_dim, 'collapsed', False)
+                        adj_level = (getattr(adj_dim, 'outlineLevel', 0) or 0)
+                        if adj_collapsed and adj_level >= outline_level:
+                            logger.debug(f"[is_col_hidden] 컬럼 {letter}: 인접 {adj_letter} collapsed=True (adj_level={adj_level} >= {outline_level}) → 숨김 판정")
+                            return True
+                except Exception as e:
+                    logger.debug(f"[is_col_hidden] 컬럼 {letter}: 인접 컬럼 접힘 판정 중 오류: {e}")
+            # 숨김 아님: dim 속성 스냅샷 남김
+            try:
+                attr_names = [a for a in dir(dim) if not a.startswith('_')]
+                snapshot = {
+                    'hidden': getattr(dim, 'hidden', None),
+                    'width': getattr(dim, 'width', None),
+                    'bestFit': getattr(dim, 'bestFit', None),
+                    'outlineLevel': getattr(dim, 'outlineLevel', None),
+                    'collapsed': getattr(dim, 'collapsed', None),
+                }
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: 숨김 아님. dim 스냅샷={snapshot}, attrs={attr_names}")
+            except Exception as e:
+                logger.debug(f"[is_col_hidden] 컬럼 {letter}: dim 속성 로깅 중 오류: {e}")
+            return False
+        except Exception:
+            return False
+
     def get_headers(self, sheet: Worksheet, header_row: int) -> List[str]:
-        """헤더 행에서 컬럼명 추출"""
+        """단일 행 기준 폴백 헤더 추출 (호환용)"""
         headers = []
         for cell in sheet[header_row]:
             value = cell.value
@@ -476,8 +958,9 @@ class ExcelProcessor:
     def convert_sheet_to_text_chunks(
         self, 
         sheet_name: str, 
-        max_length: int = MAX_TEXT_LENGTH
-    ) -> List[str]:
+        max_length: int = MAX_TEXT_LENGTH,
+        return_rows_as_list: bool = False
+    ) -> List[Any]:
         """
         시트 전체를 텍스트로 변환 (이력관리/소프트웨어 형상기록용)
         Row 단위로 체크하여 max_length를 초과하면 여러 청크로 분할
@@ -493,9 +976,10 @@ class ExcelProcessor:
         Args:
             sheet_name: 시트 이름
             max_length: 청크당 최대 문자 수 (토큰 제한)
+            return_rows_as_list: True면 청크를 문자열이 아닌 Row 리스트로 반환
         
         Returns:
-            변환된 텍스트 청크 리스트
+            변환된 텍스트 청크 리스트 (str 또는 List[str])
         """
         if not self.workbook:
             logger.error("워크북이 로드되지 않았습니다.")
@@ -503,67 +987,137 @@ class ExcelProcessor:
         
         sheet = self.workbook[sheet_name]
         
-        # 헤더 행 감지
-        header_row = self.detect_header_row(sheet)
-        headers = self.get_headers(sheet, header_row)
+        # 헤더 생성 (병합/다단 대응)
+        headers, data_start_row, header_span = self.build_headers_and_data_start(sheet)
         
-        chunks = []
-        current_chunk_rows = []
-        current_length = 0
-        data_start_row = header_row + 1
+        # === 첫 컬럼 기준 그룹핑(+최대 5행 버퍼) 로직을 적용하여 텍스트 생성 ===
+        def first_col_has_value(cells: List[Cell]) -> bool:
+            if not cells:
+                return False
+            v = cells[0].value
+            return v is not None and str(v).strip() != ''
+        
+        def merge_metadata(dst: Dict[str, str], src: Dict[str, str]):
+            for k, v in src.items():
+                if not v:
+                    continue
+                if k not in dst or not dst[k]:
+                    dst[k] = v
+                else:
+                    if v not in dst[k]:
+                        dst[k] = f"{dst[k]} / {v}"
+        
+        def make_text_from_metadata(metadata: Dict[str, str]) -> Optional[str]:
+            if not metadata:
+                return None
+            parts: List[str] = []
+            
+            # 시트명 정보 추가
+            parts.append(f"시트명: {sheet_name}")
+            
+            # 헤더 순서대로 출력 (가시 컬럼만)
+            for header in headers:
+                val = metadata.get(header, '')
+                if val:
+                    parts.append(f"{header}: {val}")
+            return '\n'.join(parts) if parts else None
+        
+        chunks: List[Any] = []
+        current_chunk_rows: List[str] = []
+        current_length: int = 0
+        
+        current_metadata: Optional[Dict[str, str]] = None
+        pending_rows: List[Dict[str, str]] = []  # 병합 전 대기 메타데이터 (최대 5행)
+        
+        def flush_current_to_chunks():
+            nonlocal current_metadata, current_chunk_rows, current_length
+            if not current_metadata:
+                return
+            row_text = make_text_from_metadata(current_metadata)
+            current_metadata = None
+            if not row_text:
+                return
+            row_length = len(row_text) + len(ROW_SEPARATOR)
+            if current_length + row_length > max_length and current_chunk_rows:
+                # 청크 마감
+                if return_rows_as_list:
+                    chunks.append(list(current_chunk_rows))
+                else:
+                    chunk_text = ROW_SEPARATOR.join(current_chunk_rows)
+                    chunks.append(chunk_text)
+                
+                logger.debug(f"청크 {len(chunks)} 완료: {len(current_chunk_rows)}개 행")
+                # 새 청크 시작
+                current_chunk_rows = [row_text]
+                current_length = row_length
+            else:
+                current_chunk_rows.append(row_text)
+                current_length += row_length
         
         for row_idx in range(data_start_row, sheet.max_row + 1):
-            # 숨겨진 행 제외
+            # 숨김 행 제외
             if self.is_row_hidden(sheet, row_idx):
                 continue
             
             row_cells = list(sheet[row_idx])
-            
             # 빈 행 건너뛰기
             if all(cell.value is None for cell in row_cells):
                 continue
             
-            # 행 데이터를 텍스트로 변환
-            row_text_parts = []
-            for col_idx, cell in enumerate(row_cells):
-                if col_idx < len(headers):
-                    header = headers[col_idx]
-                    value = cell.value
-                    if value is not None:
-                        value_str = str(value).strip()
-                        if value_str:
-                            row_text_parts.append(f"{header}: {value_str}")
+            # 현재 행의 메타데이터 구성 (병합영역 좌상단 값 사용, 숨김 컬럼 제외)
+            row_metadata: Dict[str, str] = {}
+            header_idx = 0
+            for col_idx, _cell in enumerate(row_cells):
+                col_number = col_idx + 1
+                if self.is_col_hidden(sheet, col_number):
+                    continue
+                if header_idx < len(headers):
+                    header = headers[header_idx]
+                    header_idx += 1
+                    # 수식 셀은 계산된 값(data_only)을 우선 사용
+                    merged_val = self._get_merged_top_left_value_evaluated(sheet, row_idx, col_number)
+                    text = self._normalize_text(merged_val)
+                    if text:
+                        row_metadata[header] = text
             
-            if row_text_parts:
-                row_text = '\n'.join(row_text_parts)
-                row_length = len(row_text) + len(ROW_SEPARATOR)
-                
-                # 현재 청크에 추가했을 때 max_length를 초과하는지 체크
-                if current_length + row_length > max_length and current_chunk_rows:
-                    # 현재 청크 저장하고 새 청크 시작
-                    chunk_text = ROW_SEPARATOR.join(current_chunk_rows)
-                    chunks.append(chunk_text)
-                    logger.debug(f"청크 {len(chunks)} 완료: {len(chunk_text)}자, {len(current_chunk_rows)}개 행")
-                    
-                    # 새 청크 시작
-                    current_chunk_rows = [row_text]
-                    current_length = row_length
+            if first_col_has_value(row_cells):
+                # 기존 레코드가 있으면 플러시
+                flush_current_to_chunks()
+                # 새 레코드 시작
+                current_metadata = dict(row_metadata)
+                # 대기(pending)된 선행 행들 병합 (최대 5행 누적)
+                if pending_rows:
+                    for pm in pending_rows:
+                        merge_metadata(current_metadata, pm)
+                    pending_rows.clear()
+                continue
+            
+            # 첫 컬럼이 비었을 때: 현재 레코드에 병합, 없으면 대기열에 추가
+            if current_metadata is not None:
+                merge_metadata(current_metadata, row_metadata)
+            else:
+                if len(pending_rows) < 7:
+                    pending_rows.append(dict(row_metadata))
                 else:
-                    # 현재 청크에 추가
-                    current_chunk_rows.append(row_text)
-                    current_length += row_length
+                    pending_rows.pop(0)
+                    pending_rows.append(dict(row_metadata))
+        
+        # 마지막 레코드 플러시
+        flush_current_to_chunks()
         
         # 마지막 청크 추가
         if current_chunk_rows:
-            chunk_text = ROW_SEPARATOR.join(current_chunk_rows)
-            chunks.append(chunk_text)
-            logger.debug(f"청크 {len(chunks)} 완료: {len(chunk_text)}자, {len(current_chunk_rows)}개 행")
+            if return_rows_as_list:
+                chunks.append(list(current_chunk_rows))
+            else:
+                chunk_text = ROW_SEPARATOR.join(current_chunk_rows)
+                chunks.append(chunk_text)
+            logger.debug(f"청크 {len(chunks)} 완료: {len(current_chunk_rows)}개 행")
         
-        logger.info(f"시트 '{sheet_name}' 텍스트 변환 완료: 총 {len(chunks)}개 청크, "
-                   f"총 {sum(len(c) for c in chunks)}자")
+        logger.info(f"시트 '{sheet_name}' 텍스트 변환 완료: 총 {len(chunks)}개 청크")
         return chunks
     
-    def process_sheet(self, sheet_name: str) -> Tuple[SheetType, List[Dict], List[str]]:
+    def process_sheet(self, sheet_name: str, early_stop_no_value: Optional[int] = None) -> Tuple[SheetType, List[Dict], List[str]]:
         """
         시트 처리 - 시트 타입 감지, 하이퍼링크와 메타데이터 추출
         
@@ -590,22 +1144,62 @@ class ExcelProcessor:
         sheet = self.workbook[sheet_name]
         logger.log_sheet_start(sheet_name)
         
-        # 헤더 행 감지
-        header_row = self.detect_header_row(sheet)
-        headers = self.get_headers(sheet, header_row)
-        logger.info(f"헤더: {headers}")
+        # 헤더 생성 (병합/다단 대응)
+        headers, data_start_row, header_span = self.build_headers_and_data_start(sheet)
         
         # 시트 타입 감지
         sheet_type = self.detect_sheet_type(sheet, sheet_name, headers)
         
-        results = []
-        data_start_row = header_row + 1
+        results: List[Dict] = []
         
-        # 데이터 행 처리
+        # 연속 행 병합 로직 (첫 컬럼 우선 + 5행 버퍼)
+        def count_non_empty(cells: List[Cell]) -> int:
+            return sum(1 for c in cells if c.value is not None and str(c.value).strip())
+
+        def first_col_has_value(cells: List[Cell]) -> bool:
+            if not cells:
+                return False
+            v = cells[0].value
+            return v is not None and str(v).strip() != ''
+ 
+        def merge_metadata(dst: Dict[str, str], src: Dict[str, str]):
+            for k, v in src.items():
+                if not v:
+                    continue
+                if k not in dst or not dst[k]:
+                    dst[k] = v
+                else:
+                    if v not in dst[k]:
+                        dst[k] = f"{dst[k]} / {v}"
+ 
+        current: Optional[Dict] = None
+        pending_rows: List[Tuple[Dict[str, str], List[str], int]] = []  # (metadata, hyperlinks, row_idx)
+
+        def finalize_current():
+            if not current:
+                return
+            # 하위 호환: hyperlinks가 있고 hyperlink가 비어있으면 첫 항목을 대표 링크로 설정
+            if current.get('hyperlinks') and not current.get('hyperlink'):
+                if isinstance(current.get('hyperlinks'), list) and current['hyperlinks']:
+                    current['hyperlink'] = current['hyperlinks'][0]
+            if sheet_type in [SheetType.ATTACHMENT, SheetType.REV_MANAGED, SheetType.VERSION_MANAGED] and not (current.get('hyperlink') or (isinstance(current.get('hyperlinks'), list) and current.get('hyperlinks'))):
+                return
+            if sheet_type in [SheetType.REV_MANAGED, SheetType.VERSION_MANAGED]:
+                metadata = current['metadata']
+                document_key = self.generate_document_key(sheet_type, sheet_name, metadata, headers)
+                revision = self.get_revision_value(sheet_type, metadata, headers, None)
+                if document_key:
+                    current['document_key'] = document_key
+                if revision:
+                    current['revision'] = revision
+            results.append(current.copy())
+
+        # 데이터 행 처리 (그룹핑 적용)
+        no_value_streak = 0
         for row_idx in range(data_start_row, sheet.max_row + 1):
             # 테스트 모드: 행 수 제한 확인
             if TEST_MODE and TEST_MAX_ROWS > 0 and len(results) >= TEST_MAX_ROWS:
-                logger.warning(f"[테스트 모드] 시트 '{sheet_name}': {TEST_MAX_ROWS}개 행 제한 도달, 나머지 행 건너뜀")
+                logger.warning(f"[테스트 모드] 시트 '{sheet_name}': {TEST_MAX_ROWS}개 행 제한 도달, 나머지 행 건너뜁니다.")
                 break
             
             # 숨겨진 행 또는 높이가 0인 행 제외
@@ -619,51 +1213,102 @@ class ExcelProcessor:
             if all(cell.value is None for cell in row_cells):
                 continue
             
-            # 하이퍼링크 찾기
-            hyperlink = None
-            for cell in row_cells:
+            # 하이퍼링크 찾기 (병합영역 좌상단 포함) - 행 단위로 모두 수집
+            hyperlinks_in_row: List[str] = []
+            for col_i, cell in enumerate(row_cells, start=1):
                 link = self.extract_hyperlink(cell)
+                if not link:
+                    # 병합영역의 좌상단에서 재시도
+                    coord = cell.coordinate
+                    for mrange in sheet.merged_cells.ranges:
+                        if coord in mrange:
+                            top_left_cell = sheet.cell(row=mrange.min_row, column=mrange.min_col)
+                            link = self.extract_hyperlink(top_left_cell)
+                            break
                 if link:
-                    hyperlink = link
-                    break
+                    if link not in hyperlinks_in_row:
+                        hyperlinks_in_row.append(link)
             
-            # 하이퍼링크가 없으면 건너뛰기 (첨부파일 시트만 해당)
-            if not hyperlink and sheet_type in [SheetType.ATTACHMENT, SheetType.REV_MANAGED, SheetType.VERSION_MANAGED]:
-                continue
-            
-            # 메타데이터 구성
-            metadata = {}
+            # 메타데이터 구성 (병합영역 좌상단 값 사용)
+            row_metadata: Dict[str, str] = {}
+            header_idx = 0
             for col_idx, cell in enumerate(row_cells):
-                if col_idx < len(headers):
-                    header = headers[col_idx]
-                    value = cell.value
-                    if value is not None:
-                        metadata[header] = str(value).strip()
-            
-            result = {
-                'hyperlink': hyperlink,
-                'metadata': metadata,
-                'row_number': row_idx,
-                'sheet_name': sheet_name
-            }
-            
-            # Revision 관리 시트인 경우: document_key와 revision 추가
-            if sheet_type in [SheetType.REV_MANAGED, SheetType.VERSION_MANAGED]:
-                document_key = self.generate_document_key(sheet_type, sheet_name, metadata, headers)
-                # row_cells를 전달하여 하이퍼링크 텍스트에서 revision 명 추출
-                revision = self.get_revision_value(sheet_type, metadata, headers, row_cells)
-                
-                if document_key:
-                    result['document_key'] = document_key
-                if revision:
-                    result['revision'] = revision
-                
-                logger.debug(f"{row_idx}행: 문서키={document_key}, revision={revision}")
-            
-            results.append(result)
-            
-            if hyperlink:
-                logger.debug(f"{row_idx}행 처리 완료 - 하이퍼링크: {hyperlink}")
+                col_number = col_idx + 1
+                if self.is_col_hidden(sheet, col_number):
+                    continue
+                if header_idx < len(headers):
+                    header = headers[header_idx]
+                    header_idx += 1
+                    merged_val = self._get_merged_top_left_value_evaluated(sheet, row_idx, col_number)
+                    text = self._normalize_text(merged_val)
+                    if text:
+                        row_metadata[header] = text
+
+            # 첫 컬럼 기준 그룹핑
+            if first_col_has_value(row_cells):
+                # 조기 종료 카운터 리셋
+                no_value_streak = 0
+                # 기존 레코드 마감
+                finalize_current()
+
+                # 새 레코드 시작
+                current = {
+                    'hyperlink': hyperlinks_in_row[0] if hyperlinks_in_row else None,
+                    'hyperlinks': list(hyperlinks_in_row) if hyperlinks_in_row else [],
+                    'metadata': row_metadata,
+                    'row_number': row_idx,
+                    'sheet_name': sheet_name
+                }
+
+                # 대기(pending)된 선행 행들 병합 (최대 5행 누적)
+                if pending_rows:
+                    for pm, phs, pi in pending_rows:
+                        merge_metadata(current['metadata'], pm)
+                        # 링크 병합 (대표 링크 부재 시 대표 링크 설정)
+                        if phs:
+                            if not current.get('hyperlinks'):
+                                current['hyperlinks'] = []
+                            for l in phs:
+                                if l not in current['hyperlinks']:
+                                    current['hyperlinks'].append(l)
+                            if not current.get('hyperlink') and current['hyperlinks']:
+                                current['hyperlink'] = current['hyperlinks'][0]
+                        current['row_number'] = pi
+                    pending_rows.clear()
+                continue
+
+            # 첫 컬럼 비어있음: 현재 레코드에 병합하거나, 없으면 대기열에 추가(최대 5행)
+            if current is not None:
+                merge_metadata(current['metadata'], row_metadata)
+                # 링크 병합
+                if hyperlinks_in_row:
+                    if not current.get('hyperlinks'):
+                        current['hyperlinks'] = []
+                    for l in hyperlinks_in_row:
+                        if l not in current['hyperlinks']:
+                            current['hyperlinks'].append(l)
+                    if not current.get('hyperlink'):
+                        current['hyperlink'] = current['hyperlinks'][0]
+                current['row_number'] = row_idx
+            else:
+                if len(pending_rows) < 7:
+                    pending_rows.append((row_metadata, list(hyperlinks_in_row), row_idx))
+                else:
+                    # 버퍼 초과 시 가장 오래된 항목은 폐기하여 메모리 제한 유지
+                    pending_rows.pop(0)
+                    pending_rows.append((row_metadata, list(hyperlinks_in_row), row_idx))
+
+            # 조기 종료 카운팅 (유효 값이 전혀 없을 때만 증가)
+            if row_metadata:
+                no_value_streak = 0
+            else:
+                no_value_streak += 1
+                if early_stop_no_value is not None and no_value_streak >= early_stop_no_value:
+                    logger.info(f"연속 {early_stop_no_value}개 무값 행 감지 → 스캔 조기 종료 (row={row_idx})")
+                    break
+
+        # 마지막 레코드 마감
+        finalize_current()
         
         logger.log_sheet_end(sheet_name, len(results))
         return sheet_type, results, headers

@@ -8,6 +8,7 @@ import sqlalchemy
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from logger import logger
+from urllib.parse import quote
 
 
 class DBConnector:
@@ -129,6 +130,10 @@ class DBConnector:
         """연결 문자열 생성"""
         db_type_lower = db_type.lower()
         driver_prefix = self.SUPPORTED_DATABASES[db_type_lower]
+
+        # 사용자/비밀번호는 URL 안전하게 인코딩
+        encoded_username = quote(username or "", safe="")
+        encoded_password = quote(password or "", safe="")
         
         # SQLite는 특별 처리
         if db_type_lower == 'sqlite':
@@ -139,10 +144,10 @@ class DBConnector:
             if not driver:
                 driver = 'ODBC Driver 17 for SQL Server'
             driver_param = f"?driver={driver.replace(' ', '+')}"
-            return f"{driver_prefix}://{username}:{password}@{host}:{port}/{database}{driver_param}"
+            return f"{driver_prefix}://{encoded_username}:{encoded_password}@{host}:{port}/{database}{driver_param}"
         
         # 기타 DB
-        return f"{driver_prefix}://{username}:{password}@{host}:{port}/{database}"
+        return f"{driver_prefix}://{encoded_username}:{encoded_password}@{host}:{port}/{database}"
     
     def _mask_password(self, connection_string: str) -> str:
         """연결 문자열에서 비밀번호 마스킹"""
