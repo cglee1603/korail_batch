@@ -114,6 +114,21 @@ class ExcelProcessor:
                 visible_values.append(cell_str)
                 if len(visible_values_for_analysis) < 10:
                     visible_values_for_analysis.append(cell_str)
+            
+            # 활성 컬럼의 80% 이상을 병합한 행은 제목 행으로 간주하여 헤더 후보에서 제외
+            visible_col_count = sum(1 for c in range(1, sheet_max_col + 1) if not self.is_col_hidden(sheet, c))
+            if visible_col_count > 0:
+                max_merge_span = 0
+                for mrange in sheet.merged_cells.ranges:
+                    if mrange.min_row <= row_idx <= mrange.max_row:
+                        # 이 행에 걸친 병합 영역의 컬럼 범위 계산
+                        merge_col_span = mrange.max_col - mrange.min_col + 1
+                        max_merge_span = max(max_merge_span, merge_col_span)
+                
+                if max_merge_span >= visible_col_count * 0.8:
+                    logger.debug(f"{row_idx}행 점수: 스킵(80% 이상 병합: {max_merge_span}/{visible_col_count})")
+                    continue
+                
 
             # '목차로 되돌아가기'가 포함된 행은 헤더 후보에서 제외
             try:
@@ -267,6 +282,24 @@ class ExcelProcessor:
                 return True
         return False
 
+    def _is_row_mostly_merged(self, sheet: Worksheet, row: int, threshold: float = 0.8) -> bool:
+        """
+        행이 활성 컬럼의 threshold(기본 80%) 이상 병합되어 있는지 확인
+        (제목 행처럼 전체가 하나로 병합된 경우 True)
+        """
+        sheet_max_col = sheet.max_column or 1
+        visible_col_count = sum(1 for c in range(1, sheet_max_col + 1) if not self.is_col_hidden(sheet, c))
+        if visible_col_count == 0:
+            return False
+        
+        max_merge_span = 0
+        for mrange in sheet.merged_cells.ranges:
+            if mrange.min_row <= row <= mrange.max_row:
+                merge_col_span = mrange.max_col - mrange.min_col + 1
+                max_merge_span = max(max_merge_span, merge_col_span)
+        
+        return max_merge_span >= visible_col_count * threshold
+
     def _make_unique_headers(self, headers: List[str]) -> List[str]:
         seen: dict[str, int] = {}
         unique: List[str] = []
@@ -371,8 +404,11 @@ class ExcelProcessor:
         include_next = False
 
         if base_header_row > 1:
-            prev_non_empty = self._row_non_empty_count(sheet, base_header_row - 1, max_col)
-            include_prev = prev_non_empty >= 2
+            prev_row = base_header_row - 1
+            # 80% 이상 병합된 행은 이전 헤더로 포함하지 않음
+            if not self._is_row_mostly_merged(sheet, prev_row):
+                prev_non_empty = self._row_non_empty_count(sheet, prev_row, max_col)
+                include_prev = prev_non_empty >= 2
 
         header_start = base_header_row - 1 if include_prev else base_header_row
         
@@ -421,6 +457,11 @@ class ExcelProcessor:
         for r in marker_rows:
             if r - 1 >= 1:
                 exclude_rows.add(r - 1)
+        # 80% 이상 병합된 행도 헤더에서 제외
+        for r in header_rows:
+            if self._is_row_mostly_merged(sheet, r):
+                exclude_rows.add(r)
+                logger.debug(f"헤더 범위에서 제외 (80% 이상 병합): {r}행")
         header_rows = [r for r in header_rows if r not in exclude_rows]
         # 2-3) 모두 제외되었다면, 기준 행이 제외된 경우를 피해서 대체 행 선택
         if not header_rows:
@@ -951,6 +992,134 @@ class ExcelProcessor:
         
         except Exception as e:
             logger.error(f"시트 '{sheet_name}' Excel 추출 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def extract_sheet_as_simplified_excel(self, output_dir: Path) -> Optional[Path]:
+        """
+        모든 시트를 단순화하여 하나의 Excel 파일로 추출 (RAGFlow table parser 호환)
+        
+        - 숨김/목차 시트 제외
+        - 각 시트의 다단/병합 헤더를 1행으로 평탄화
+        - 결과를 {원본파일명}_simplified.xlsx 로 저장
+        
+        Args:
+            output_dir: 출력 디렉토리
+        
+        Returns:
+            단순화된 Excel 파일 경로 또는 None
+        """
+        if not self.workbook:
+            logger.error("워크북이 로드되지 않았습니다.")
+            return None
+        
+        try:
+            sheet_names = self.get_sheet_names()
+            if not sheet_names:
+                logger.warning("시트가 없습니다.")
+                return None
+            
+            # 새 워크북 생성
+            new_wb = openpyxl.Workbook()
+            default_sheet = new_wb.active
+            first_sheet_added = False
+            
+            processed_count = 0
+            skipped_count = 0
+            
+            for sheet_name in sheet_names:
+                try:
+                    sheet = self.workbook[sheet_name]
+                    
+                    # 숨김 시트 제외
+                    if sheet.sheet_state in ['hidden', 'veryHidden']:
+                        logger.debug(f"숨김 시트 스킵: {sheet_name}")
+                        skipped_count += 1
+                        continue
+                    
+                    # 목차 시트 제외
+                    if any(kw in sheet_name.lower() for kw in ['목차', 'toc', 'contents', 'index']):
+                        logger.debug(f"목차 시트 스킵: {sheet_name}")
+                        skipped_count += 1
+                        continue
+                    
+                    # 헤더 감지
+                    headers, data_start_row, _ = self.build_headers_and_data_start(sheet)
+                    if not headers:
+                        logger.warning(f"시트 '{sheet_name}'에서 헤더를 찾을 수 없어 스킵합니다.")
+                        skipped_count += 1
+                        continue
+                    
+                    # 가시 컬럼 인덱스 목록 (1-based)
+                    visible_col_indices = [c for c in range(1, (sheet.max_column or 1) + 1) 
+                                           if not self.is_col_hidden(sheet, c)]
+                    if len(visible_col_indices) > len(headers):
+                        visible_col_indices = visible_col_indices[:len(headers)]
+                    
+                    # 시트 생성
+                    safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in sheet_name)[:31]
+                    if not first_sheet_added:
+                        target_sheet = default_sheet
+                        target_sheet.title = safe_name
+                        first_sheet_added = True
+                    else:
+                        target_sheet = new_wb.create_sheet(safe_name)
+                    
+                    # 헤더 쓰기 (1행)
+                    for col_idx, header in enumerate(headers, start=1):
+                        target_sheet.cell(row=1, column=col_idx, value=header)
+                    
+                    # 데이터 쓰기 (2행~)
+                    target_row = 2
+                    for src_row in range(data_start_row, (sheet.max_row or data_start_row) + 1):
+                        if self.is_row_hidden(sheet, src_row):
+                            continue
+                        
+                        row_values = []
+                        is_empty = True
+                        for col_idx in visible_col_indices:
+                            val = self._get_merged_top_left_value_evaluated(sheet, src_row, col_idx)
+                            norm = self._normalize_text(val)
+                            row_values.append(norm)
+                            if norm:
+                                is_empty = False
+                        
+                        if is_empty:
+                            continue
+                        
+                        for col_idx, val in enumerate(row_values, start=1):
+                            if val:
+                                target_sheet.cell(row=target_row, column=col_idx, value=val)
+                        target_row += 1
+                    
+                    # 컬럼 너비 조정
+                    for col_idx, header in enumerate(headers, start=1):
+                        col_letter = get_column_letter(col_idx)
+                        target_sheet.column_dimensions[col_letter].width = min(50, max(10, len(header) * 1.5 + 2))
+                    
+                    processed_count += 1
+                    logger.debug(f"시트 단순화: {sheet_name} ({target_row - 2}개 행)")
+                    
+                except Exception as e:
+                    logger.warning(f"시트 '{sheet_name}' 처리 중 오류: {e}")
+                    continue
+            
+            if processed_count == 0:
+                logger.warning("처리된 시트가 없습니다.")
+                new_wb.close()
+                return None
+            
+            # 저장
+            output_path = output_dir / f"{self.excel_path.stem}_simplified.xlsx"
+            new_wb.save(output_path)
+            new_wb.close()
+            
+            logger.info(f"전체 시트 단순화 완료: {output_path.name} ({processed_count}개 시트, 스킵: {skipped_count}개)")
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"전체 시트 단순화 실패: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None

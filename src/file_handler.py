@@ -16,6 +16,17 @@ import requests
 from logger import logger
 from config import DOWNLOAD_DIR, TEMP_DIR, TEXT_ENCODING, PDF_SPLIT_SIZE_MB, PDF_SPLIT_MAX_PAGES
 
+# Excel 단순화용 (지연 import로 순환 참조 방지)
+_ExcelProcessor = None
+
+def _get_excel_processor():
+    """ExcelProcessor 지연 로드 (순환 참조 방지)"""
+    global _ExcelProcessor
+    if _ExcelProcessor is None:
+        from excel_processor import ExcelProcessor
+        _ExcelProcessor = ExcelProcessor
+    return _ExcelProcessor
+
 # Windows 전용 모듈 (조건부 import)
 try:
     import win32gui
@@ -107,12 +118,15 @@ class FileHandler:
             # 다운로드 캐시 저장 (revision_db가 있는 경우)
             if self.revision_db:
                 file_size = save_path.stat().st_size
-                self.revision_db.save_download_cache(
+                success = self.revision_db.save_download_cache(
                     url=url,
                     file_path=str(save_path),
                     file_size=file_size
                 )
-                logger.debug(f"다운로드 캐시 저장 완료: {url}")
+                if success:
+                    logger.debug(f"다운로드 캐시 저장 완료: {url}")
+                else:
+                    logger.warning(f"다운로드 캐시 저장 실패: {url}")
             
             return save_path
         
@@ -958,8 +972,19 @@ class FileHandler:
                 results.append((file_path, ext))
                 logger.info(f"{ext.upper()} 파일 - 변환 없이 사용: {file_path.name}")
         
+        elif ext in ['xlsx', 'xls', 'xlsm']:
+            # Excel 파일 - 모든 시트를 단순화된 Excel로 변환 (RAGFlow Table 파서 호환)
+            simplified_path = self._simplify_excel_for_table_parser(file_path)
+            if simplified_path:
+                results.append((simplified_path, 'xlsx'))
+                logger.info(f"Excel 파일 - 단순화 완료 (Table 파서용): {file_path.name} → {simplified_path.name}")
+            else:
+                # 단순화 실패 시 원본 사용
+                results.append((file_path, ext))
+                logger.warning(f"Excel 단순화 실패, 원본 사용: {file_path.name}")
+        
         elif ext in ['hwp', 'hwpx', 'doc', 'docx', 'docm', 'odt', 'rtf', 'wps', 
-                     'xls', 'xlsx', 'xlsm', 'ods', 'csv', 
+                     'ods', 'csv', 
                      'ppt', 'pptx', 'pptm', 'odp', 
                      'odg', 'vsd', 'vsdx']:
             # Office -> PDF 변환 (암호화는 이미 해제됨)
@@ -987,6 +1012,37 @@ class FileHandler:
             results.append((file_path, ext))
         
         return results
+    
+    def _simplify_excel_for_table_parser(self, file_path: Path) -> Optional[Path]:
+        """
+        Excel 파일을 RAGFlow Table 파서에 맞게 단순화
+        
+        ExcelProcessor.extract_all_sheets_as_simplified_excel() 호출
+        
+        Args:
+            file_path: 원본 Excel 파일 경로
+            
+        Returns:
+            단순화된 Excel 파일 경로 (실패 시 None)
+        """
+        try:
+            ExcelProcessor = _get_excel_processor()
+            processor = ExcelProcessor(str(file_path))
+            
+            if not processor.load_workbook():
+                logger.error(f"Excel 워크북 로드 실패: {file_path.name}")
+                return None
+            
+            result = processor.extract_sheet_as_simplified_excel(self.temp_dir)
+            processor.close()
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Excel 단순화 중 오류: {file_path.name} - {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
     
     def create_text_file(self, content: str, filename: str) -> Optional[Path]:
         """

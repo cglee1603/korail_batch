@@ -171,6 +171,12 @@ async def health_check():
     }
 
 
+@app.get("/true")
+async def return_true():
+    """항상 true 반환"""
+    return True
+
+
 @app.post("/batch/run", response_model=BatchResponse)
 async def run_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     """

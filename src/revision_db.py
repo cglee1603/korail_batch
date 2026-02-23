@@ -136,7 +136,7 @@ class RevisionDB:
                         updated_at TIMESTAMP NOT NULL,
                         UNIQUE(document_key, dataset_id, file_name)
                     )
-                """).format(qualified('documents'))
+                """).format(qualified('mt_documents'))
             )
             
             # 다운로드 캐시 테이블
@@ -150,7 +150,7 @@ class RevisionDB:
                         downloaded_at TIMESTAMP NOT NULL,
                         last_accessed TIMESTAMP NOT NULL
                     )
-                """).format(qualified('download_cache'))
+                """).format(qualified('mt_download_cache'))
             )
             
             # 처리된 URL 테이블 (Revision 관리 안하는 시트용)
@@ -161,7 +161,7 @@ class RevisionDB:
                         url TEXT NOT NULL UNIQUE,
                         processed_at TIMESTAMP NOT NULL
                     )
-                """).format(qualified('processed_urls'))
+                """).format(qualified('mt_processed_urls'))
             )
             
             # 인덱스 생성
@@ -169,35 +169,35 @@ class RevisionDB:
                 sql.SQL("""
                     CREATE INDEX IF NOT EXISTS idx_document_key 
                     ON {}(document_key)
-                """).format(qualified('documents'))
+                """).format(qualified('mt_documents'))
             )
             
             cursor.execute(
                 sql.SQL("""
                     CREATE INDEX IF NOT EXISTS idx_dataset_id 
                     ON {}(dataset_id)
-                """).format(qualified('documents'))
+                """).format(qualified('mt_documents'))
             )
             
             cursor.execute(
                 sql.SQL("""
                     CREATE INDEX IF NOT EXISTS idx_document_id 
                     ON {}(document_id)
-                """).format(qualified('documents'))
+                """).format(qualified('mt_documents'))
             )
             
             cursor.execute(
                 sql.SQL("""
                     CREATE INDEX IF NOT EXISTS idx_download_url 
                     ON {}(url)
-                """).format(qualified('download_cache'))
+                """).format(qualified('mt_download_cache'))
             )
             
             cursor.execute(
                 sql.SQL("""
                     CREATE INDEX IF NOT EXISTS idx_processed_url 
                     ON {}(url)
-                """).format(qualified('processed_urls'))
+                """).format(qualified('mt_processed_urls'))
             )
             
             # 기존 테이블에 file_id 컬럼 추가 (마이그레이션)
@@ -206,7 +206,7 @@ class RevisionDB:
                     sql.SQL("""
                         ALTER TABLE {} 
                         ADD COLUMN IF NOT EXISTS file_id TEXT
-                    """).format(qualified('documents'))
+                    """).format(qualified('mt_documents'))
                 )
                 logger.debug("file_id 컬럼 추가/확인 완료")
             except Exception as e:
@@ -218,7 +218,7 @@ class RevisionDB:
                     sql.SQL("""
                         ALTER TABLE {} 
                         ADD COLUMN IF NOT EXISTS file_hash TEXT
-                    """).format(qualified('documents'))
+                    """).format(qualified('mt_documents'))
                 )
                 logger.debug("file_hash 컬럼 추가/확인 완료")
             except Exception as e:
@@ -244,7 +244,7 @@ class RevisionDB:
     
     def drop_table(self, confirm: bool = False) -> bool:
         """
-        ⚠️ 위험: documents 테이블 삭제 (모든 데이터 손실)
+        ⚠️ 위험: mt_documents 테이블 삭제 (모든 데이터 손실)
         
         테이블을 잘못 생성했거나 스키마를 변경해야 할 때만 사용하세요.
         삭제 후 자동으로 재생성되지 않으므로 수동으로 _init_database()를 호출해야 합니다.
@@ -274,15 +274,15 @@ class RevisionDB:
             if getattr(self, 'schema_name', None):
                 cursor.execute(
                     sql.SQL("DROP TABLE IF EXISTS {}").format(
-                        sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier('documents')])
+                        sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier('mt_documents')])
                     )
                 )
             else:
-                cursor.execute("DROP TABLE IF EXISTS documents")
+                cursor.execute("DROP TABLE IF EXISTS mt_documents")
             
             conn.commit()
             
-            logger.warning(f"⚠️ documents 테이블이 삭제되었습니다: {self.db_config['database']}")
+            logger.warning(f"⚠️ mt_documents 테이블이 삭제되었습니다: {self.db_config['database']}")
             return True
         
         except Exception as e:
@@ -312,18 +312,29 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             if file_name:
-                cursor.execute("""
-                    SELECT * FROM documents 
-                    WHERE document_key = %s AND dataset_id = %s AND file_name = %s
-                """, (document_key, dataset_id, file_name))
+                cursor.execute(
+                    sql.SQL("""
+                        SELECT * FROM {} 
+                        WHERE document_key = %s AND dataset_id = %s AND file_name = %s
+                    """).format(qualified('mt_documents')),
+                    (document_key, dataset_id, file_name)
+                )
             else:
-                cursor.execute("""
-                    SELECT * FROM documents 
-                    WHERE document_key = %s AND dataset_id = %s
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                """, (document_key, dataset_id))
+                cursor.execute(
+                    sql.SQL("""
+                        SELECT * FROM {} 
+                        WHERE document_key = %s AND dataset_id = %s
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                    """).format(qualified('mt_documents')),
+                    (document_key, dataset_id)
+                )
             
             row = cursor.fetchone()
             
@@ -339,7 +350,7 @@ class RevisionDB:
                 cursor.close()
                 self._put_connection(conn)
     
-    def get_documents_by_key(self, document_key: str, dataset_id: str) -> List[Dict]:
+    def get_mt_documents_by_key(self, document_key: str, dataset_id: str) -> List[Dict]:
         """
         동일한 document_key를 가진 모든 문서 조회 (압축 파일 등)
         
@@ -355,11 +366,19 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            cursor.execute("""
-                SELECT * FROM documents 
-                WHERE document_key = %s AND dataset_id = %s
-                ORDER BY created_at ASC
-            """, (document_key, dataset_id))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("""
+                    SELECT * FROM {} 
+                    WHERE document_key = %s AND dataset_id = %s
+                    ORDER BY created_at ASC
+                """).format(qualified('mt_documents')),
+                (document_key, dataset_id)
+            )
             
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
@@ -411,35 +430,46 @@ class RevisionDB:
             cursor = conn.cursor()
             now = datetime.now()
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             # 기존 문서 확인 (file_name까지 포함)
             existing = self.get_document(document_key, dataset_id, file_name)
             
             if existing:
                 # 업데이트
-                cursor.execute("""
-                    UPDATE documents 
-                    SET document_id = %s,
-                        file_id = %s,
-                        revision = %s,
-                        file_path = %s,
-                        file_hash = %s,
-                        is_part_of_archive = %s,
-                        archive_source = %s,
-                        updated_at = %s
-                    WHERE document_key = %s AND dataset_id = %s AND file_name = %s
-                """, (document_id, file_id, revision, file_path, file_hash, is_part_of_archive, archive_source, 
-                      now, document_key, dataset_id, file_name))
+                cursor.execute(
+                    sql.SQL("""
+                        UPDATE {} 
+                        SET document_id = %s,
+                            file_id = %s,
+                            revision = %s,
+                            file_path = %s,
+                            file_hash = %s,
+                            is_part_of_archive = %s,
+                            archive_source = %s,
+                            updated_at = %s
+                        WHERE document_key = %s AND dataset_id = %s AND file_name = %s
+                    """).format(qualified('mt_documents')),
+                    (document_id, file_id, revision, file_path, file_hash, is_part_of_archive, archive_source, 
+                     now, document_key, dataset_id, file_name)
+                )
                 logger.debug(f"문서 업데이트: {document_key}/{file_name} → {document_id}")
             else:
                 # 신규 삽입
-                cursor.execute("""
-                    INSERT INTO documents 
-                    (document_key, document_id, file_id, dataset_id, dataset_name, revision, 
-                     file_path, file_name, file_hash, is_part_of_archive, archive_source, 
-                     created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (document_key, document_id, file_id, dataset_id, dataset_name, revision,
-                      file_path, file_name, file_hash, is_part_of_archive, archive_source, now, now))
+                cursor.execute(
+                    sql.SQL("""
+                        INSERT INTO {} 
+                        (document_key, document_id, file_id, dataset_id, dataset_name, revision, 
+                         file_path, file_name, file_hash, is_part_of_archive, archive_source, 
+                         created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """).format(qualified('mt_documents')),
+                    (document_key, document_id, file_id, dataset_id, dataset_name, revision,
+                     file_path, file_name, file_hash, is_part_of_archive, archive_source, now, now)
+                )
                 logger.debug(f"문서 저장: {document_key}/{file_name} → {document_id}")
             
             conn.commit()
@@ -472,16 +502,27 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor()
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             if file_name:
-                cursor.execute("""
-                    DELETE FROM documents 
-                    WHERE document_key = %s AND dataset_id = %s AND file_name = %s
-                """, (document_key, dataset_id, file_name))
+                cursor.execute(
+                    sql.SQL("""
+                        DELETE FROM {} 
+                        WHERE document_key = %s AND dataset_id = %s AND file_name = %s
+                    """).format(qualified('mt_documents')),
+                    (document_key, dataset_id, file_name)
+                )
             else:
-                cursor.execute("""
-                    DELETE FROM documents 
-                    WHERE document_key = %s AND dataset_id = %s
-                """, (document_key, dataset_id))
+                cursor.execute(
+                    sql.SQL("""
+                        DELETE FROM {} 
+                        WHERE document_key = %s AND dataset_id = %s
+                    """).format(qualified('mt_documents')),
+                    (document_key, dataset_id)
+                )
             
             deleted_count = cursor.rowcount
             conn.commit()
@@ -504,7 +545,7 @@ class RevisionDB:
                 cursor.close()
                 self._put_connection(conn)
     
-    def get_all_documents(self, dataset_id: str = None) -> List[Dict]:
+    def get_all_mt_documents(self, dataset_id: str = None) -> List[Dict]:
         """
         모든 문서 조회 (선택적으로 dataset_id 필터링)
         
@@ -519,17 +560,27 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             if dataset_id:
-                cursor.execute("""
-                    SELECT * FROM documents 
-                    WHERE dataset_id = %s
-                    ORDER BY updated_at DESC
-                """, (dataset_id,))
+                cursor.execute(
+                    sql.SQL("""
+                        SELECT * FROM {} 
+                        WHERE dataset_id = %s
+                        ORDER BY updated_at DESC
+                    """).format(qualified('mt_documents')),
+                    (dataset_id,)
+                )
             else:
-                cursor.execute("""
-                    SELECT * FROM documents 
-                    ORDER BY updated_at DESC
-                """)
+                cursor.execute(
+                    sql.SQL("""
+                        SELECT * FROM {} 
+                        ORDER BY updated_at DESC
+                    """).format(qualified('mt_documents'))
+                )
             
             rows = cursor.fetchall()
             
@@ -543,7 +594,7 @@ class RevisionDB:
                 cursor.close()
                 self._put_connection(conn)
     
-    def get_documents_by_dataset_name(self, dataset_name: str) -> List[Dict]:
+    def get_mt_documents_by_dataset_name(self, dataset_name: str) -> List[Dict]:
         """
         dataset_name으로 모든 문서 조회
         
@@ -558,11 +609,19 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            cursor.execute("""
-                SELECT * FROM documents 
-                WHERE dataset_name = %s
-                ORDER BY updated_at DESC
-            """, (dataset_name,))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("""
+                    SELECT * FROM {} 
+                    WHERE dataset_name = %s
+                    ORDER BY updated_at DESC
+                """).format(qualified('mt_documents')),
+                (dataset_name,)
+            )
             
             rows = cursor.fetchall()
             
@@ -591,10 +650,18 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            cursor.execute("""
-                DELETE FROM documents 
-                WHERE dataset_id = %s
-            """, (dataset_id,))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("""
+                    DELETE FROM {} 
+                    WHERE dataset_id = %s
+                """).format(qualified('mt_documents')),
+                (dataset_id,)
+            )
             
             deleted_count = cursor.rowcount
             conn.commit()
@@ -624,35 +691,46 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor()
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             # 총 문서 수
-            cursor.execute("SELECT COUNT(*) FROM documents")
+            cursor.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}").format(qualified('mt_documents'))
+            )
             total_docs = cursor.fetchone()[0]
             
             # 지식베이스별 문서 수
-            cursor.execute("""
-                SELECT dataset_name, COUNT(*) as count 
-                FROM documents 
-                GROUP BY dataset_name 
-                ORDER BY count DESC
-            """)
+            cursor.execute(
+                sql.SQL("""
+                    SELECT dataset_name, COUNT(*) as count 
+                    FROM {} 
+                    GROUP BY dataset_name 
+                    ORDER BY count DESC
+                """).format(qualified('mt_documents'))
+            )
             datasets = cursor.fetchall()
             
             # 다운로드 캐시 통계
             try:
-                cursor.execute("SELECT COUNT(*) FROM download_cache")
+                cursor.execute(
+                    sql.SQL("SELECT COUNT(*) FROM {}").format(qualified('mt_download_cache'))
+                )
                 cached_downloads = cursor.fetchone()[0]
             except:
                 cached_downloads = 0
             
             return {
-                'total_documents': total_docs,
+                'total_mt_documents': total_docs,
                 'datasets': [{'name': ds[0], 'count': ds[1]} for ds in datasets],
                 'cached_downloads': cached_downloads
             }
         
         except Exception as e:
             logger.error(f"통계 조회 실패: {e}")
-            return {'total_documents': 0, 'datasets': [], 'cached_downloads': 0}
+            return {'total_mt_documents': 0, 'datasets': [], 'cached_downloads': 0}
         finally:
             if conn:
                 cursor.close()
@@ -675,21 +753,25 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
-            cursor.execute("""
-                SELECT * FROM download_cache 
-                WHERE url = %s
-            """, (url,))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("SELECT * FROM {} WHERE url = %s").format(qualified('mt_download_cache')),
+                (url,)
+            )
             
             row = cursor.fetchone()
             
             if row:
                 # 마지막 접근 시간 업데이트
                 now = datetime.now()
-                cursor.execute("""
-                    UPDATE download_cache 
-                    SET last_accessed = %s
-                    WHERE url = %s
-                """, (now, url))
+                cursor.execute(
+                    sql.SQL("UPDATE {} SET last_accessed = %s WHERE url = %s").format(qualified('mt_download_cache')),
+                    (now, url)
+                )
                 conn.commit()
                 
                 return dict(row)
@@ -726,32 +808,47 @@ class RevisionDB:
             cursor = conn.cursor()
             now = datetime.now()
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
             # 기존 캐시 확인
-            cursor.execute("""
-                SELECT id FROM download_cache WHERE url = %s
-            """, (url,))
+            cursor.execute(
+                sql.SQL("SELECT id FROM {} WHERE url = %s").format(qualified('mt_download_cache')),
+                (url,)
+            )
             
             existing = cursor.fetchone()
             
             if existing:
                 # 업데이트
-                cursor.execute("""
-                    UPDATE download_cache 
-                    SET file_path = %s,
-                        file_size = %s,
-                        downloaded_at = %s,
-                        last_accessed = %s
-                    WHERE url = %s
-                """, (file_path, file_size, now, now, url))
+                cursor.execute(
+                    sql.SQL("""
+                        UPDATE {} 
+                        SET file_path = %s,
+                            file_size = %s,
+                            downloaded_at = %s,
+                            last_accessed = %s
+                        WHERE url = %s
+                    """).format(qualified('mt_download_cache')),
+                    (file_path, file_size, now, now, url)
+                )
                 logger.debug(f"다운로드 캐시 업데이트: {url}")
             else:
                 # 신규 삽입
-                cursor.execute("""
-                    INSERT INTO download_cache 
+                query = sql.SQL("""
+                    INSERT INTO {} 
                     (url, file_path, file_size, downloaded_at, last_accessed)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (url, file_path, file_size, now, now))
-                logger.debug(f"다운로드 캐시 저장: {url}")
+                """).format(qualified('mt_download_cache'))
+                
+                # 실제 실행될 쿼리 로깅
+                logger.debug(f"실행 쿼리: {query.as_string(conn)}")
+                logger.debug(f"스키마명: {getattr(self, 'schema_name', 'None')}")
+                
+                cursor.execute(query, (url, file_path, file_size, now, now))
+                logger.debug(f"다운로드 캐시 저장: {url} (affected rows: {cursor.rowcount})")
             
             conn.commit()
             return True
@@ -760,39 +857,79 @@ class RevisionDB:
             if conn:
                 conn.rollback()
             logger.error(f"다운로드 캐시 저장 실패: {e}")
+            import traceback
+            logger.error(f"상세 에러: {traceback.format_exc()}")
             return False
         finally:
             if conn:
                 cursor.close()
                 self._put_connection(conn)
     
-    def clear_download_cache(self, older_than_days: int = None) -> int:
+    def clear_mt_download_cache(self, older_than_days: int = None, delete_files: bool = True) -> int:
         """
-        다운로드 캐시 정리
+        다운로드 캐시 정리 (DB 레코드 + 실제 파일)
         
         Args:
             older_than_days: 지정된 일수보다 오래된 캐시만 삭제 (None이면 전체 삭제)
+            delete_files: True이면 실제 파일도 삭제 (기본값: True)
         
         Returns:
             삭제된 캐시 수
         """
         conn = None
         try:
+            from pathlib import Path
+            
             conn = self._get_connection()
             cursor = conn.cursor()
             
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            # 1. 삭제할 파일 경로 먼저 가져오기 (파일 삭제가 필요한 경우)
+            file_paths = []
+            if delete_files:
+                if older_than_days:
+                    cursor.execute(
+                        sql.SQL("SELECT file_path FROM {} WHERE last_accessed < NOW() - INTERVAL '%s days'").format(qualified('mt_download_cache')),
+                        (older_than_days,)
+                    )
+                else:
+                    cursor.execute(
+                        sql.SQL("SELECT file_path FROM {}").format(qualified('mt_download_cache'))
+                    )
+                file_paths = [row[0] for row in cursor.fetchall()]
+            
+            # 2. DB 레코드 삭제
             if older_than_days:
-                cursor.execute("""
-                    DELETE FROM download_cache 
-                    WHERE last_accessed < NOW() - INTERVAL '%s days'
-                """, (older_than_days,))
+                cursor.execute(
+                    sql.SQL("DELETE FROM {} WHERE last_accessed < NOW() - INTERVAL '%s days'").format(qualified('mt_download_cache')),
+                    (older_than_days,)
+                )
             else:
-                cursor.execute("DELETE FROM download_cache")
+                cursor.execute(
+                    sql.SQL("DELETE FROM {}").format(qualified('mt_download_cache'))
+                )
             
             deleted_count = cursor.rowcount
             conn.commit()
             
-            logger.info(f"다운로드 캐시 정리: {deleted_count}개 삭제")
+            # 3. 실제 파일 삭제
+            deleted_files = 0
+            if delete_files and file_paths:
+                for file_path in file_paths:
+                    try:
+                        path = Path(file_path)
+                        if path.exists():
+                            path.unlink()
+                            deleted_files += 1
+                            logger.debug(f"캐시 파일 삭제: {path.name}")
+                    except Exception as e:
+                        logger.warning(f"파일 삭제 실패 ({file_path}): {e}")
+            
+            logger.info(f"다운로드 캐시 정리: DB {deleted_count}개, 파일 {deleted_files}개 삭제")
             return deleted_count
         
         except Exception as e:
@@ -822,7 +959,15 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            cursor.execute("SELECT 1 FROM processed_urls WHERE url = %s", (url,))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("SELECT 1 FROM {} WHERE url = %s").format(qualified('mt_processed_urls')),
+                (url,)
+            )
             return cursor.fetchone() is not None
         
         except Exception as e:
@@ -848,11 +993,19 @@ class RevisionDB:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            cursor.execute("""
-                INSERT INTO processed_urls (url, processed_at)
-                VALUES (%s, %s)
-                ON CONFLICT (url) DO NOTHING
-            """, (url, datetime.now()))
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("""
+                    INSERT INTO {} (url, processed_at)
+                    VALUES (%s, %s)
+                    ON CONFLICT (url) DO NOTHING
+                """).format(qualified('mt_processed_urls')),
+                (url, datetime.now())
+            )
             
             conn.commit()
             return True

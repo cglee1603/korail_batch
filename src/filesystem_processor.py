@@ -14,6 +14,7 @@ from config import (
     DATASET_PERMISSION,
     CHUNK_METHOD,
     PARSER_CONFIG,
+    AUTO_PARSE_AFTER_UPLOAD,
     MONITOR_PARSE_PROGRESS,
     PARSE_TIMEOUT_MINUTES
 )
@@ -256,6 +257,14 @@ class FilesystemProcessor:
                         file_id = upload_result.get('file_id')
                         uploaded_doc_ids.append(doc_id)
                         
+                        # Excel 파일인 경우 chunk_method를 "table"로 설정
+                        if file_type in ['xlsx', 'xls', 'xlsm']:
+                            self.ragflow_client.update_document_parser(
+                                dataset_id=dataset_id,
+                                document_id=doc_id,
+                                chunk_method="table"
+                            )
+                        
                         # DB 저장/갱신
                         self.revision_db.save_document(
                             document_key=document_key,
@@ -290,14 +299,17 @@ class FilesystemProcessor:
 
         # 일괄 파싱 시작
         if uploaded_doc_ids:
-            logger.info(f"[{dataset_name}] {len(uploaded_doc_ids)}개 문서 파싱 시작")
-            parse_started = self.ragflow_client.start_batch_parse(
-                dataset,
-                document_ids=uploaded_doc_ids
-            )
-            
-            if parse_started and MONITOR_PARSE_PROGRESS:
-                logger.info(f"[{dataset_name}] 파싱이 백그라운드에서 시작되었습니다.")
+            if AUTO_PARSE_AFTER_UPLOAD:
+                logger.info(f"[{dataset_name}] {len(uploaded_doc_ids)}개 문서 파싱 시작")
+                parse_started = self.ragflow_client.start_batch_parse(
+                    dataset,
+                    document_ids=uploaded_doc_ids
+                )
+                
+                if parse_started and MONITOR_PARSE_PROGRESS:
+                    logger.info(f"[{dataset_name}] 파싱이 백그라운드에서 시작되었습니다.")
+            else:
+                logger.info(f"[{dataset_name}] {len(uploaded_doc_ids)}개 문서 업로드 완료 (자동 파싱 비활성화)")
 
     def _print_statistics(self):
         """통계 출력"""

@@ -524,6 +524,50 @@ class RAGFlowClient:
             logger.error(f"문서 업데이트 중 오류: {e}")
             return False
 
+    def update_document_parser(self, dataset_id: str, document_id: str, chunk_method: str = "table") -> bool:
+        """
+        문서의 파서(chunk_method) 업데이트
+        
+        Args:
+            dataset_id: 지식베이스 ID
+            document_id: 문서 ID
+            chunk_method: 파싱 방법 (기본: "table")
+            
+        Returns:
+            성공 여부
+        """
+        try:
+            logger.debug(f"문서 파서 업데이트 시도: KB={dataset_id}, Doc={document_id}, Method={chunk_method}")
+            
+            # API: PUT /api/v1/datasets/{dataset_id}/documents/{document_id}
+            endpoint = f'/api/v1/datasets/{dataset_id}/documents/{document_id}'
+            
+            payload = {
+                "chunk_method": chunk_method
+            }
+            
+            response = self._make_request(
+                'PUT',
+                endpoint,
+                json=payload
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    logger.info(f"✓ 문서 파서 업데이트 완료: {document_id} → {chunk_method}")
+                    return True
+                else:
+                    logger.error(f"✗ 문서 파서 업데이트 실패: {result.get('message')}")
+                    return False
+            else:
+                logger.error(f"✗ 문서 파서 업데이트 실패 (HTTP {response.status_code}): {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"문서 파서 업데이트 중 오류: {e}")
+            return False
+
     def start_batch_parse(self, dataset: Dict, document_ids: List[str] = None) -> bool:
         """
         지식베이스의 문서 파싱 시작
@@ -633,7 +677,7 @@ class RAGFlowClient:
         except Exception as e:
             logger.error(f"파싱 중지 중 오류: {e}")
             return False
-    
+
     def get_parse_progress(self, dataset: Dict, document_ids: List[str] = None) -> Optional[Dict]:
         """
         지식베이스의 파싱 진행 상황 조회
@@ -774,6 +818,74 @@ class RAGFlowClient:
             import traceback
             logger.debug(traceback.format_exc())
             return []
+    
+    def get_document_by_id(self, dataset: Dict, document_id: str) -> Optional[Dict]:
+        """
+        특정 문서 ID로 문서 정보 조회
+        
+        Args:
+            dataset: Dataset 딕셔너리
+            document_id: 조회할 문서 ID
+        
+        Returns:
+            문서 정보 딕셔너리 또는 None
+        """
+        try:
+            kb_id = dataset.get('id')
+            if not kb_id:
+                logger.error("지식베이스 ID를 찾을 수 없습니다.")
+                return None
+            
+            response = self._make_request(
+                'GET',
+                f'/api/v1/datasets/{kb_id}/documents',
+                params={
+                    'id': document_id,
+                    'page': 1,
+                    'page_size': 1
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    data = result.get('data', [])
+                    if isinstance(data, list):
+                        documents = data
+                    elif isinstance(data, dict):
+                        documents = data.get('docs', [])
+                    else:
+                        documents = []
+                    
+                    if documents:
+                        return documents[0]
+                    else:
+                        logger.debug(f"문서를 찾을 수 없습니다: {document_id}")
+                        return None
+            
+            return None
+        
+        except Exception as e:
+            logger.debug(f"문서 조회 중 오류: {e}")
+            return None
+    
+    def get_documents_by_ids(self, dataset: Dict, document_ids: List[str]) -> List[Dict]:
+        """
+        여러 문서 ID로 문서 정보 일괄 조회
+        
+        Args:
+            dataset: Dataset 딕셔너리
+            document_ids: 조회할 문서 ID 리스트
+        
+        Returns:
+            문서 정보 리스트
+        """
+        documents = []
+        for doc_id in document_ids:
+            doc = self.get_document_by_id(dataset, doc_id)
+            if doc:
+                documents.append(doc)
+        return documents
     
     def delete_document(self, dataset: Dict, document_id: str) -> bool:
         """

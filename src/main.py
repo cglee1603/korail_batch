@@ -213,6 +213,33 @@ def main():
 
   # (검증) 처리 결과 덤프(JSON): 헤더/행을 전체 프로세스로 추출
   python run.py --export-processed --excel "data/20250515_KTX-DATA_EMU.xlsx" --export-outdir "data/temp/processed_dump" --early-stop 10 --once
+
+  # 동시성 제한 파싱 - 현재 RUNNING 수 확인 후 해당 수 유지하면서 파싱
+  python run.py --throttle-parse "지식베이스_이름"
+  
+  # 동시성 제한 파싱 - 모든 지식베이스 대상
+  python run.py --throttle-parse "ALL" --confirm
+  
+  # 동시성 제한 파싱 - 동시 파싱 수 직접 지정 (예: 3개)
+  python run.py --throttle-parse "지식베이스_이름" --concurrency 3 --confirm
+  
+  # 동시성 제한 파싱 - 모든 지식베이스, 동시 5개 파싱
+  python run.py --throttle-parse "ALL" --concurrency 5 --confirm
+  
+  # 동시성 제한 파싱 - 확인 간격 조정 (예: 5초마다 확인)
+  python run.py --throttle-parse "지식베이스_이름" --check-interval 5 --confirm
+  
+  # 동시성 제한 파싱 - DONE 문서도 재파싱
+  python run.py --throttle-parse "지식베이스_이름" --include-done --confirm
+  
+  # 동시성 제한 파싱 - FAIL 문서도 포함
+  python run.py --throttle-parse "지식베이스_이름" --include-failed --confirm
+  
+  # 동시성 제한 파싱 - DONE, FAIL 모두 포함
+  python run.py --throttle-parse "지식베이스_이름" --include-done --include-failed --confirm
+  
+  # 동시성 제한 파싱 - 최대 동작 시간 지정 (예: 8시간)
+  python run.py --throttle-parse "지식베이스_이름" --max-hours 8 --confirm
         """
     )
     
@@ -288,6 +315,71 @@ def main():
         type=str,
         metavar='DATASET_NAME',
         help='파싱 중(Running)인 문서 취소(삭제) (예: --cancel-parsing "시트1")'
+    )
+
+    parser.add_argument(
+        '--reparse-all',
+        type=str,
+        metavar='DATASET_NAME',
+        help='지식베이스의 모든 문서를 재파싱(서버가 기존 청크/작업을 정리 후 재큐잉) (예: --reparse-all "시트1")'
+    )
+
+    parser.add_argument(
+        '--cancel-running',
+        action='store_true',
+        help='(호환) --reparse-all에서 RUNNING 문서를 포함할 때 허용 플래그'
+    )
+
+    parser.add_argument(
+        '--include-running',
+        action='store_true',
+        help='--reparse-all에서 RUNNING 문서도 대상으로 포함'
+    )
+
+    parser.add_argument(
+        '--exclude-failed',
+        action='store_true',
+        help='--reparse-all에서 FAIL 문서를 제외'
+    )
+    
+    parser.add_argument(
+        '--throttle-parse',
+        type=str,
+        metavar='DATASET_NAME',
+        help='동시성 제한 파싱 - 현재 RUNNING 수를 기준으로 동시 파싱 수 유지 (예: --throttle-parse "시트1", 특수값: "ALL"로 모든 데이터셋)'
+    )
+    
+    parser.add_argument(
+        '--concurrency',
+        type=int,
+        default=None,
+        help='--throttle-parse에서 동시 파싱 수 직접 지정 (미지정시 현재 RUNNING 수 사용)'
+    )
+    
+    parser.add_argument(
+        '--check-interval',
+        type=int,
+        default=10,
+        help='--throttle-parse에서 상태 확인 간격 (초, 기본: 10)'
+    )
+    
+    parser.add_argument(
+        '--include-done',
+        action='store_true',
+        help='--throttle-parse에서 DONE 문서도 재파싱 대상에 포함'
+    )
+    
+    parser.add_argument(
+        '--include-failed',
+        action='store_true',
+        help='--throttle-parse에서 FAIL 문서도 재파싱 대상에 포함'
+    )
+    
+    parser.add_argument(
+        '--max-hours',
+        type=float,
+        default=2.0,
+        help='--throttle-parse에서 최대 동작 시간 (시간 단위, 기본: 2시간)'
     )
     
     parser.add_argument(
@@ -397,6 +489,32 @@ def main():
     if args.cancel_parsing:
         processor = BatchProcessor()
         processor.cancel_parsing_documents_by_dataset_name(args.cancel_parsing, args.confirm)
+        return
+
+    # 전체 재파싱 (청크 리셋 후 재파싱)
+    if args.reparse_all:
+        processor = BatchProcessor()
+        processor.reparse_all_documents_by_dataset_name(
+            dataset_name=args.reparse_all,
+            confirm=args.confirm,
+            cancel_running=args.cancel_running,
+            include_running=args.include_running,
+            include_failed=not args.exclude_failed
+        )
+        return
+
+    # 동시성 제한 파싱 (현재 RUNNING 수 유지)
+    if args.throttle_parse:
+        processor = BatchProcessor()
+        processor.throttle_parse_by_dataset_name(
+            dataset_name=args.throttle_parse,
+            confirm=args.confirm,
+            concurrency_limit=args.concurrency,
+            include_done=args.include_done,
+            include_failed=args.include_failed,
+            check_interval=args.check_interval,
+            max_hours=args.max_hours
+        )
         return
 
     # 지식베이스 삭제

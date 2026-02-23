@@ -17,6 +17,7 @@ from config import (
     DB_CONNECTION_STRING,
     CHUNK_METHOD,
     PARSER_CONFIG,
+    AUTO_PARSE_AFTER_UPLOAD,
     MONITOR_PARSE_PROGRESS,
     PARSE_TIMEOUT_MINUTES,
     ENABLE_REVISION_MANAGEMENT,
@@ -58,6 +59,17 @@ class BatchProcessor:
         
         # Revision 관리 DB 먼저 초기화 (FileHandler에서 사용)
         self.revision_db = RevisionDB()
+        
+        # 다운로드 캐시 자동 정리 (설정된 경우)
+        from config import AUTO_CLEAN_DOWNLOAD_CACHE, DOWNLOAD_CACHE_KEEP_DAYS
+        if AUTO_CLEAN_DOWNLOAD_CACHE:
+            logger.info(f"다운로드 캐시 자동 정리 시작 (보관 기간: {DOWNLOAD_CACHE_KEEP_DAYS}일)")
+            if DOWNLOAD_CACHE_KEEP_DAYS > 0:
+                deleted = self.revision_db.clear_mt_download_cache(older_than_days=DOWNLOAD_CACHE_KEEP_DAYS, delete_files=True)
+                logger.info(f"✓ {DOWNLOAD_CACHE_KEEP_DAYS}일 이상된 캐시 정리 완료: {deleted}개")
+            else:
+                deleted = self.revision_db.clear_mt_download_cache(older_than_days=None, delete_files=True)
+                logger.info(f"✓ 전체 캐시 정리 완료: {deleted}개")
         
         # 암복호화 핸들러 초기화
         from crypto_handler import CryptoHandler
@@ -489,16 +501,19 @@ class BatchProcessor:
             
             # v21: 업로드된 문서 ID들만 파싱
             if uploaded_document_ids:
-                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(
-                    dataset,
-                    document_ids=uploaded_document_ids
-                )
-                
-                if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
-                elif parse_started:
-                    logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                if AUTO_PARSE_AFTER_UPLOAD:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
+                    parse_started = self.ragflow_client.start_batch_parse(
+                        dataset,
+                        document_ids=uploaded_document_ids
+                    )
+                    
+                    if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
+                        self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    elif parse_started:
+                        logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                else:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료 (자동 파싱 비활성화)")
             else:
                 logger.info(f"[{sheet_name}] 업로드된 파일이 없습니다.")
             
@@ -553,16 +568,19 @@ class BatchProcessor:
             
             # v21: 업로드된 문서 ID들만 파싱
             if uploaded_document_ids:
-                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(
-                    dataset,
-                    document_ids=uploaded_document_ids
-                )
-                
-                if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
-                elif parse_started:
-                    logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                if AUTO_PARSE_AFTER_UPLOAD:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료, 파싱 시작")
+                    parse_started = self.ragflow_client.start_batch_parse(
+                        dataset,
+                        document_ids=uploaded_document_ids
+                    )
+                    
+                    if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
+                        self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    elif parse_started:
+                        logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                else:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 문서 업로드 완료 (자동 파싱 비활성화)")
             
             logger.info(f"[{sheet_name}] 첨부파일 시트 처리 완료")
         
@@ -712,16 +730,19 @@ class BatchProcessor:
             
             # v21: 업로드된 문서 ID들만 파싱
             if uploaded_document_ids:
-                logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 파일 업로드 완료, 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(
-                    dataset,
-                    document_ids=uploaded_document_ids
-                )
-                
-                if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
-                    self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
-                elif parse_started:
-                    logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                if AUTO_PARSE_AFTER_UPLOAD:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 파일 업로드 완료, 파싱 시작")
+                    parse_started = self.ragflow_client.start_batch_parse(
+                        dataset,
+                        document_ids=uploaded_document_ids
+                    )
+                    
+                    if parse_started and monitor_progress and MONITOR_PARSE_PROGRESS:
+                        self.monitor_parse_progress(dataset, sheet_name, uploaded_document_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    elif parse_started:
+                        logger.info(f"[{sheet_name}] 파싱이 백그라운드에서 진행됩니다.")
+                else:
+                    logger.info(f"[{sheet_name}] {len(uploaded_document_ids)}개 파일 업로드 완료 (자동 파싱 비활성화)")
             
             logger.info(f"[{sheet_name}] 시트 처리 완료")
         
@@ -773,14 +794,17 @@ class BatchProcessor:
             
             # 일괄 파싱 시작
             if uploaded_count > 0:
-                logger.info(f"시트 '{sheet_name}': {uploaded_count}개 파일 업로드 완료, 일괄 파싱 시작")
-                parse_started = self.ragflow_client.start_batch_parse(dataset)
-                
-                # 진행 상황 모니터링 (옵션)
-                if parse_started and monitor_progress:
-                    self.monitor_parse_progress(dataset, sheet_name, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
-                elif parse_started:
-                    logger.info(f"시트 '{sheet_name}': 파싱이 백그라운드에서 진행됩니다. Management UI에서 확인하세요.")
+                if AUTO_PARSE_AFTER_UPLOAD:
+                    logger.info(f"시트 '{sheet_name}': {uploaded_count}개 파일 업로드 완료, 일괄 파싱 시작")
+                    parse_started = self.ragflow_client.start_batch_parse(dataset)
+                    
+                    # 진행 상황 모니터링 (옵션)
+                    if parse_started and monitor_progress:
+                        self.monitor_parse_progress(dataset, sheet_name, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+                    elif parse_started:
+                        logger.info(f"시트 '{sheet_name}': 파싱이 백그라운드에서 진행됩니다. Management UI에서 확인하세요.")
+                else:
+                    logger.info(f"시트 '{sheet_name}': {uploaded_count}개 파일 업로드 완료 (자동 파싱 비활성화)")
             
             logger.log_sheet_end(sheet_name, uploaded_count)
         
@@ -877,6 +901,14 @@ class BatchProcessor:
                     if upload_result:
                         doc_id = upload_result.get('document_id')
                         file_id = upload_result.get('file_id')
+
+                        # Excel 파일인 경우 chunk_method를 "table"로 설정
+                        if file_type in ['xlsx', 'xls', 'xlsm']:
+                            self.ragflow_client.update_document_parser(
+                                dataset_id=dataset.get('id'),
+                                document_id=doc_id,
+                                chunk_method="table"
+                            )
 
                         # 메타데이터 업데이트 (업로드 후 별도 호출)
                         # 중요: 사용자 요구사항에 따라 엑셀의 row별 헤더:값(metadata)만 전달한다.
@@ -1463,6 +1495,453 @@ class BatchProcessor:
 
         except Exception as e:
             logger.error(f"작업 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def get_running_document_count(self, dataset) -> tuple:
+        """
+        특정 데이터셋에서 현재 파싱 중(RUNNING)인 문서 수와 전체 상태 정보를 반환
+        
+        Args:
+            dataset: 데이터셋 딕셔너리
+            
+        Returns:
+            (running_count, status_counts) 튜플
+            - running_count: RUNNING 상태 문서 수
+            - status_counts: 상태별 문서 수 딕셔너리
+        """
+        try:
+            all_documents = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=100)
+                if not docs:
+                    break
+                all_documents.extend(docs)
+                if len(docs) < 100:
+                    break
+                page += 1
+            
+            status_counts = {'UNSTART': 0, 'RUNNING': 0, 'CANCEL': 0, 'DONE': 0, 'FAIL': 0, 'TOTAL': len(all_documents)}
+            
+            for doc in all_documents:
+                run_status = str(doc.get('run', '0'))
+                if run_status == '0':
+                    status_counts['UNSTART'] += 1
+                elif run_status == '1':
+                    status_counts['RUNNING'] += 1
+                elif run_status == '2':
+                    status_counts['CANCEL'] += 1
+                elif run_status == '3':
+                    status_counts['DONE'] += 1
+                elif run_status == '4':
+                    status_counts['FAIL'] += 1
+            
+            return status_counts['RUNNING'], status_counts
+            
+        except Exception as e:
+            logger.error(f"RUNNING 문서 수 조회 실패: {e}")
+            return 0, {}
+
+    def throttle_parse_by_dataset_name(
+        self,
+        dataset_name: str,
+        confirm: bool = False,
+        concurrency_limit: int = None,
+        include_done: bool = False,
+        include_failed: bool = False,
+        check_interval: int = 10,
+        max_hours: float = 2.0
+    ):
+        """
+        동시 파싱 수를 제한하면서 전체 문서 파싱 수행
+        
+        현재 RUNNING 상태의 문서 수를 기준으로 동시 파싱 수를 제한하여
+        서버 부하를 조절하면서 전체 문서를 파싱합니다.
+        
+        Args:
+            dataset_name: 지식베이스 이름 (특수값 "ALL"이면 모든 데이터셋)
+            confirm: True여야 실제 실행
+            concurrency_limit: 동시 파싱 수 제한 (None이면 현재 RUNNING 수 사용)
+            include_done: DONE 상태 문서 포함 여부 (재파싱)
+            include_failed: FAIL 상태 문서 포함 여부
+            check_interval: 상태 확인 간격 (초)
+            max_hours: 최대 동작 시간 (시간 단위, 기본: 2시간)
+        """
+        # "ALL" 옵션 처리 - 모든 데이터셋 대상
+        if dataset_name.upper() == "ALL":
+            logger.info("=" * 80)
+            logger.info("모든 지식베이스 동시성 제한 파싱 (Throttled Parse ALL)")
+            logger.info("=" * 80)
+            
+            # 전체 데이터셋 목록 조회
+            all_datasets = self.ragflow_client.list_datasets(page=1, page_size=1000)
+            if not all_datasets:
+                logger.warning("지식베이스가 없습니다.")
+                return
+            
+            logger.info(f"총 {len(all_datasets)}개 지식베이스 발견:")
+            for ds in all_datasets:
+                logger.info(f"  - {ds.get('name')} (ID: {ds.get('id')})")
+            
+            if not confirm:
+                logger.info("\n" + "=" * 80)
+                logger.info("실제로 파싱을 실행하려면 --confirm 옵션을 추가하세요.")
+                logger.info('  예: python run.py --throttle-parse "ALL" --confirm')
+                logger.info(f"\n예상 동작:")
+                logger.info(f"  - 대상: 모든 지식베이스 ({len(all_datasets)}개)")
+                logger.info(f"  - 동시 파싱 수: {concurrency_limit or '자동 감지'}개")
+                logger.info(f"  - 확인 간격: {check_interval}초")
+                logger.info(f"  - 최대 동작 시간: {max_hours}시간")
+                logger.info("=" * 80)
+                return
+            
+            # 각 데이터셋에 대해 순차적으로 파싱 실행
+            logger.info("\n" + "=" * 80)
+            logger.info("모든 지식베이스 파싱 시작")
+            logger.info("=" * 80)
+            
+            for idx, dataset in enumerate(all_datasets, 1):
+                ds_name = dataset.get('name')
+                logger.info(f"\n[{idx}/{len(all_datasets)}] 처리 중: {ds_name}")
+                logger.info("-" * 60)
+                
+                try:
+                    # 개별 데이터셋 파싱 (재귀 호출)
+                    self.throttle_parse_by_dataset_name(
+                        dataset_name=ds_name,
+                        confirm=True,  # 이미 확인했으므로 True
+                        concurrency_limit=concurrency_limit,
+                        include_done=include_done,
+                        include_failed=include_failed,
+                        check_interval=check_interval,
+                        max_hours=max_hours
+                    )
+                except Exception as e:
+                    logger.error(f"지식베이스 '{ds_name}' 파싱 중 오류: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    logger.info("다음 지식베이스로 계속...")
+            
+            logger.info("\n" + "=" * 80)
+            logger.info("모든 지식베이스 파싱 완료")
+            logger.info("=" * 80)
+            return
+        
+        # 기존 로직: 특정 데이터셋 파싱
+        logger.info("=" * 80)
+        logger.info(f"지식베이스 '{dataset_name}' 동시성 제한 파싱 (Throttled Parse)")
+        logger.info("=" * 80)
+        
+        try:
+            # 1. 지식베이스 조회
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return
+            
+            dataset_id = dataset.get('id')
+            logger.info(f"Dataset ID: {dataset_id}")
+            
+            # 2. 현재 상태 조회
+            running_count, status_counts = self.get_running_document_count(dataset)
+            
+            logger.info("-" * 40)
+            logger.info("현재 문서 상태:")
+            logger.info(f"  - 총 문서: {status_counts.get('TOTAL', 0)}개")
+            logger.info(f"  - UNSTART: {status_counts.get('UNSTART', 0)}개")
+            logger.info(f"  - RUNNING: {status_counts.get('RUNNING', 0)}개")
+            logger.info(f"  - CANCEL: {status_counts.get('CANCEL', 0)}개")
+            logger.info(f"  - DONE: {status_counts.get('DONE', 0)}개")
+            logger.info(f"  - FAIL: {status_counts.get('FAIL', 0)}개")
+            
+            # 3. 동시성 제한 설정
+            if concurrency_limit is None:
+                if running_count > 0:
+                    concurrency_limit = running_count
+                    logger.info(f"\n✓ 동시성 제한: 현재 RUNNING 수 기준 → {concurrency_limit}개")
+                else:
+                    concurrency_limit = 5  # 기본값
+                    logger.info(f"\n⚠ 현재 RUNNING 문서가 없어 기본값 사용: {concurrency_limit}개")
+            else:
+                logger.info(f"\n✓ 동시성 제한: 사용자 지정 → {concurrency_limit}개")
+            
+            # 4. 파싱 대상 문서 수집
+            all_documents = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=100)
+                if not docs:
+                    break
+                all_documents.extend(docs)
+                if len(docs) < 100:
+                    break
+                page += 1
+            
+            # 파싱 대상: UNSTART, CANCEL, (옵션) DONE, (옵션) FAIL
+            pending_ids = []
+            for doc in all_documents:
+                run_status = str(doc.get('run', '0'))
+                doc_id = doc.get('id')
+                
+                if run_status in ['0', '2']:  # UNSTART, CANCEL
+                    pending_ids.append(doc_id)
+                elif run_status == '3' and include_done:  # DONE (재파싱)
+                    pending_ids.append(doc_id)
+                elif run_status == '4' and include_failed:  # FAIL
+                    pending_ids.append(doc_id)
+            
+            total_pending = len(pending_ids)
+            logger.info(f"파싱 대기 문서: {total_pending}개")
+            logger.info(f"  - 옵션: include_done={include_done}, include_failed={include_failed}")
+            
+            if total_pending == 0:
+                logger.info("파싱할 문서가 없습니다.")
+                return
+            
+            if not confirm:
+                logger.info("\n" + "-" * 40)
+                logger.info("실제로 파싱을 실행하려면 --confirm 옵션을 추가하세요.")
+                logger.info(f'  예: python run.py --throttle-parse "{dataset_name}" --confirm')
+                logger.info(f"\n예상 동작:")
+                logger.info(f"  - 동시 파싱 수: {concurrency_limit}개 유지")
+                logger.info(f"  - 파싱 대상: {total_pending}개")
+                logger.info(f"  - 확인 간격: {check_interval}초")
+                logger.info(f"  - 최대 동작 시간: {max_hours}시간")
+                return
+            
+            # 5. 동시성 제한 파싱 실행
+            logger.info("\n" + "=" * 80)
+            logger.info("동시성 제한 파싱 시작")
+            logger.info(f"최대 동작 시간: {max_hours}시간")
+            logger.info("=" * 80)
+            
+            start_time = time.time()
+            max_wait_seconds = max_hours * 3600  # 시간 -> 초
+            
+            submitted_ids = set()  # 이미 파싱 요청한 문서
+            completed_ids = set()  # 완료된 문서
+            
+            # 전체 문서 목록은 이미 위에서 조회했으므로 all_documents 사용
+            # pending_ids도 이미 계산됨
+            logger.info(f"✓ 전체 문서 목록 캐시 완료: {len(all_documents)}개 (매 반복마다 재조회하지 않음)")
+            
+            while len(completed_ids) < total_pending:
+                # 제출했지만 아직 완료되지 않은 문서 ID들
+                in_progress_ids = list(submitted_ids - completed_ids)
+                
+                # 제출한 문서들의 현재 상태만 개별 조회 (전체 목록 조회 대신)
+                our_running = 0
+                if in_progress_ids:
+                    # 진행 중인 문서들의 상태만 조회
+                    in_progress_docs = self.ragflow_client.get_documents_by_ids(dataset, in_progress_ids)
+                    
+                    for doc in in_progress_docs:
+                        doc_id = doc.get('id')
+                        run_status = str(doc.get('run', '0'))
+                        
+                        if run_status in ['3', '4']:  # DONE or FAIL
+                            completed_ids.add(doc_id)
+                        elif run_status == '1':  # RUNNING
+                            our_running += 1
+                
+                # 추가 가능한 슬롯 계산
+                available_slots = concurrency_limit - our_running
+                
+                # 아직 제출하지 않은 문서 중 추가
+                if available_slots > 0:
+                    to_submit = []
+                    for doc_id in pending_ids:
+                        if doc_id not in submitted_ids and len(to_submit) < available_slots:
+                            to_submit.append(doc_id)
+                    
+                    if to_submit:
+                        logger.info(f"[{len(completed_ids)}/{total_pending}] "
+                                   f"RUNNING: {our_running} → 추가 요청: {len(to_submit)}개")
+                        
+                        # 파싱 요청
+                        if self.ragflow_client.start_batch_parse(dataset, document_ids=to_submit):
+                            for doc_id in to_submit:
+                                submitted_ids.add(doc_id)
+                        else:
+                            logger.warning("파싱 요청 실패, 재시도 예정...")
+                else:
+                    # 진행 상황 로그
+                    if len(completed_ids) % 10 == 0 or our_running > 0:
+                        logger.info(f"[{len(completed_ids)}/{total_pending}] "
+                                   f"RUNNING: {our_running}/{concurrency_limit}")
+                
+                # 타임아웃 체크
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_seconds:
+                    logger.warning(f"⏱️ 최대 동작 시간 초과 ({max_hours}시간)")
+                    logger.info(f"진행 상황: {len(completed_ids)}/{total_pending} 완료")
+                    break
+                
+                # 모든 문서가 제출되고 완료되면 종료
+                if len(submitted_ids) >= total_pending and len(completed_ids) >= len(submitted_ids):
+                    break
+                
+                # 대기
+                time.sleep(check_interval)
+            
+            # 최종 상태 확인
+            _, final_status = self.get_running_document_count(dataset)
+            
+            elapsed_time = time.time() - start_time
+            elapsed_minutes = elapsed_time / 60
+            
+            logger.info("\n" + "=" * 80)
+            logger.info("파싱 완료")
+            logger.info("-" * 40)
+            logger.info(f"소요 시간: {elapsed_minutes:.1f}분")
+            logger.info(f"완료된 문서: {len(completed_ids)}/{total_pending}개")
+            logger.info(f"최종 상태:")
+            logger.info(f"  - DONE: {final_status.get('DONE', 0)}개")
+            logger.info(f"  - FAIL: {final_status.get('FAIL', 0)}개")
+            logger.info(f"  - RUNNING: {final_status.get('RUNNING', 0)}개")
+            logger.info("=" * 80)
+            
+        except Exception as e:
+            logger.error(f"동시성 제한 파싱 중 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def reparse_all_documents_by_dataset_name(
+        self,
+        dataset_name: str,
+        confirm: bool = False,
+        cancel_running: bool = False,
+        include_running: bool = False,
+        include_failed: bool = True,
+        monitor_progress: bool = True,
+        page_size: int = 100
+    ):
+        """
+        특정 지식베이스의 "모든 문서"를 재파싱합니다.
+        
+        기본 동작:
+        - 문서 목록을 전부 조회
+        - RUNNING 문서는 기본적으로 제외 (include_running=False)
+        - confirm=True일 때만 재파싱을 시작 (서버가 기존 청크/작업을 정리하고 재큐잉함)
+        
+        Args:
+            dataset_name: 지식베이스 이름
+            confirm: True여야 실제 실행 (재파싱 시 서버가 기존 청크/작업을 정리하므로 안전장치)
+            cancel_running: (호환 유지) True면 RUNNING 문서도 대상으로 포함하도록 허용
+            include_running: True면 RUNNING 문서도 "재파싱 대상"으로 포함 (cancel_running과 함께 쓰는 것을 권장)
+            include_failed: True면 FAIL 문서도 포함
+            monitor_progress: 진행 모니터링 여부
+            page_size: 문서 목록 페이지 크기
+        """
+        logger.info("=" * 80)
+        logger.info(f"지식베이스 '{dataset_name}' 전체 문서 재파싱")
+        logger.info("=" * 80)
+        
+        try:
+            dataset = self.ragflow_client.get_dataset_by_name(dataset_name)
+            if not dataset:
+                logger.error(f"지식베이스 '{dataset_name}'을 찾을 수 없습니다.")
+                return
+            
+            # 1) 문서 목록 전체 수집
+            all_documents = []
+            page = 1
+            while True:
+                docs = self.ragflow_client.get_documents_in_dataset(dataset, page=page, page_size=page_size)
+                if not docs:
+                    break
+                all_documents.extend(docs)
+                if len(docs) < page_size:
+                    break
+                page += 1
+            
+            if not all_documents:
+                logger.warning("문서가 없습니다.")
+                return
+            
+            # 2) 대상 문서 선정
+            # run status: '0': UNSTART, '1': RUNNING, '2': CANCEL, '3': DONE, '4': FAIL
+            target_ids = []
+            doc_run_map = {}
+            counts = {'TOTAL': len(all_documents), 'RUNNING': 0, 'DONE': 0, 'UNSTART': 0, 'CANCEL': 0, 'FAIL': 0, 'UNKNOWN': 0}
+            
+            for doc in all_documents:
+                run_status = str(doc.get('run', '0'))
+                doc_id = doc.get('id')
+                if not doc_id:
+                    continue
+                doc_run_map[doc_id] = run_status
+                
+                if run_status == '1':
+                    counts['RUNNING'] += 1
+                    if include_running:
+                        target_ids.append(doc_id)
+                elif run_status == '3':
+                    counts['DONE'] += 1
+                    target_ids.append(doc_id)
+                elif run_status == '4':
+                    counts['FAIL'] += 1
+                    if include_failed:
+                        target_ids.append(doc_id)
+                elif run_status == '2':
+                    counts['CANCEL'] += 1
+                    target_ids.append(doc_id)
+                elif run_status == '0':
+                    counts['UNSTART'] += 1
+                    target_ids.append(doc_id)
+                else:
+                    counts['UNKNOWN'] += 1
+                    target_ids.append(doc_id)
+            
+            # 중복 제거 (방어)
+            target_ids = list(dict.fromkeys(target_ids))
+            
+            logger.info("-" * 40)
+            logger.info("문서 상태 요약:")
+            logger.info(f"  - 총 문서: {counts['TOTAL']}개")
+            logger.info(f"  - UNSTART: {counts['UNSTART']}개")
+            logger.info(f"  - CANCEL: {counts['CANCEL']}개")
+            logger.info(f"  - DONE: {counts['DONE']}개")
+            logger.info(f"  - FAIL: {counts['FAIL']}개 (include_failed={include_failed})")
+            logger.info(f"  - RUNNING: {counts['RUNNING']}개 (include_running={include_running})")
+            if counts['UNKNOWN'] > 0:
+                logger.info(f"  - UNKNOWN: {counts['UNKNOWN']}개")
+            logger.info(f"재파싱 대상 문서: {len(target_ids)}개")
+            
+            if not target_ids:
+                logger.info("재파싱할 대상 문서가 없습니다.")
+                return
+            
+            if not confirm:
+                logger.info("\n실제로 재파싱을 실행하려면 --confirm 옵션을 추가하세요.")
+                logger.info(f'  예: python run.py --reparse-all "{dataset_name}" --confirm')
+                logger.info("주의: --confirm 실행 시 대상 문서의 기존 청크가 삭제(리셋)됩니다.")
+                return
+            
+            # 3) RUNNING 문서 처리 정책
+            if counts['RUNNING'] > 0 and include_running and not cancel_running:
+                logger.warning("RUNNING 문서를 포함하려면 --cancel-running 옵션을 함께 사용하세요. (안전)")
+                logger.warning("현재 설정에서는 RUNNING 문서를 대상에서 제외합니다.")
+                # 대상에서 RUNNING 문서를 제거
+                running_ids = {d.get('id') for d in all_documents if str(d.get('run', '0')) == '1'}
+                target_ids = [i for i in target_ids if i not in running_ids]
+            
+            # 4) 재파싱 시작
+            # 참고: RAGFlow v21 API(POST /datasets/{id}/chunks)는 내부에서 기존 chunk/index/task를 정리하고 재큐잉한다.
+            logger.info("\n재파싱 시작...")
+            parse_started = self.ragflow_client.start_batch_parse(dataset, document_ids=target_ids)
+            if not parse_started:
+                logger.error("재파싱 요청 실패")
+                return
+            
+            if monitor_progress and MONITOR_PARSE_PROGRESS:
+                self.monitor_parse_progress(dataset, dataset_name, target_ids, max_wait_minutes=PARSE_TIMEOUT_MINUTES)
+            else:
+                logger.info(f"[{dataset_name}] 재파싱이 백그라운드에서 진행됩니다.")
+        
+        except Exception as e:
+            logger.error(f"전체 재파싱 중 오류 발생: {e}")
             import traceback
             logger.error(traceback.format_exc())
 

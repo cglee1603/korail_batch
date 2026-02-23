@@ -167,6 +167,9 @@ else:
 # 데이터 소스 선택
 DATA_SOURCE = os.getenv("DATA_SOURCE", "excel")  # "excel", "db", "filesystem" 또는 콤마로 구분된 조합 (예: "excel,db")
 
+# 업로드 후 자동 파싱 실행 여부
+AUTO_PARSE_AFTER_UPLOAD = os.getenv("AUTO_PARSE_AFTER_UPLOAD", "true").lower() == "true"
+
 # 파싱 진행 상황 모니터링 설정
 MONITOR_PARSE_PROGRESS = os.getenv("MONITOR_PARSE_PROGRESS", "false").lower() == "true"
 PARSE_TIMEOUT_MINUTES = int(os.getenv("PARSE_TIMEOUT_MINUTES", "30"))  # 최대 대기 시간 (분)
@@ -301,3 +304,11 @@ DECRYPTED_DIR.mkdir(parents=True, exist_ok=True)
 
 # 복호화 타임아웃 (초)
 DECRYPTION_TIMEOUT = int(os.getenv("DECRYPTION_TIMEOUT", "60"))
+
+# ==================== 다운로드 캐시 자동 정리 설정 ====================
+# 프로그램 시작 시 다운로드 캐시 자동 정리 (true/false)
+AUTO_CLEAN_DOWNLOAD_CACHE = os.getenv("AUTO_CLEAN_DOWNLOAD_CACHE", "false").lower() == "true"
+
+# 자동 정리 시 보관할 캐시 일수 (이보다 오래된 캐시만 삭제)
+# 0 = 전체 삭제, 양수 = N일 이상된 캐시만 삭제
+DOWNLOAD_CACHE_KEEP_DAYS = int(os.getenv("DOWNLOAD_CACHE_KEEP_DAYS", "7"))

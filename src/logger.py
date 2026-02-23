@@ -12,7 +12,7 @@ class BatchLogger:
     
     def __init__(self, name: str = "rag_batch"):
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)
         
         # 로그 포맷 설정
         formatter = logging.Formatter(
@@ -23,12 +23,12 @@ class BatchLogger:
         # 파일 핸들러 (일별 로그 파일)
         log_file = LOG_DIR / f"batch_{datetime.now().strftime('%Y%m%d')}.log"
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         
         # 콘솔 핸들러
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.DEBUG)
         console_handler.setFormatter(formatter)
         
         # 핸들러 추가
