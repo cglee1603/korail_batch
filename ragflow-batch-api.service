@@ -1,0 +1,18 @@
+[Unit]
+Description=RAGFlow Plus Batch API Server
+After=network.target
+
+[Service]
+Type=simple
+User=minds
+Group=minds
+WorkingDirectory=/home/minds/rag_batch
+Environment=PATH=/home/minds/rag_batch/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/minds/rag_batch/venv/bin/python start_api.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/minds/rag_batch/logs/service.log
+StandardError=append:/home/minds/rag_batch/logs/service_error.log
+
+[Install]
+WantedBy=multi-user.target

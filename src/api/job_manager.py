@@ -1,12 +1,18 @@
 """
 비동기 작업 상태 관리자 (In-Memory)
+
+작업이 완료(completed) 또는 실패(failed)되면 즉시 메모리에서 자동 삭제됩니다.
+결과 정보는 삭제 전에 로그로 기록됩니다.
 """
 import uuid
+import logging
 import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 from api.models import JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 class JobManager:
@@ -53,18 +59,32 @@ class JobManager:
             job["started_at"] = datetime.now().isoformat()
 
     def complete_job(self, job_id: str, stats: Optional[Dict[str, Any]] = None):
+        """작업 완료 처리 후 즉시 메모리에서 삭제"""
         job = self._storage.get(job_id)
         if job:
-            job["status"] = JobStatus.COMPLETED
-            job["completed_at"] = datetime.now().isoformat()
-            job["stats"] = stats
+            completed_at = datetime.now().isoformat()
+            logger.info(
+                f"[Job {job_id}] 완료 → 자동 삭제 | "
+                f"type={job['job_type']}, "
+                f"created={job['created_at']}, "
+                f"completed={completed_at}, "
+                f"stats={stats}"
+            )
+            del self._storage[job_id]
 
     def fail_job(self, job_id: str, error_message: str):
+        """작업 실패 처리 후 즉시 메모리에서 삭제"""
         job = self._storage.get(job_id)
         if job:
-            job["status"] = JobStatus.FAILED
-            job["completed_at"] = datetime.now().isoformat()
-            job["error_message"] = error_message
+            completed_at = datetime.now().isoformat()
+            logger.warning(
+                f"[Job {job_id}] 실패 → 자동 삭제 | "
+                f"type={job['job_type']}, "
+                f"created={job['created_at']}, "
+                f"failed={completed_at}, "
+                f"error={error_message}"
+            )
+            del self._storage[job_id]
 
     def delete_job(self, job_id: str) -> bool:
         if job_id in self._storage:

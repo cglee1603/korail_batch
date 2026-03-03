@@ -425,15 +425,24 @@ class APITester:
     # ---------- 유틸 ----------
 
     def _poll_job(self, job_id: str, timeout: int = 60) -> str:
-        """작업 상태 폴링. 최종 상태 반환."""
+        """작업 상태 폴링. 최종 상태 반환.
+
+        완료/실패된 작업은 서버에서 자동 삭제되므로,
+        진행 중이던 작업이 404를 반환하면 '완료 후 정리됨'으로 판단합니다.
+        """
         start = time.time()
         interval = 2
+        seen_running = False
         while time.time() - start < timeout:
             resp = safe_request("get", f"{self.base_url}/jobs/{job_id}")
             if resp and resp.status_code == 200:
                 status = resp.json().get("status", "")
+                if status in ("running", "queued"):
+                    seen_running = True
                 if status in ("completed", "failed"):
                     return status
+            elif resp and resp.status_code == 404 and seen_running:
+                return "completed"
             time.sleep(interval)
             interval = min(interval * 1.5, 10)
         return "timeout"
