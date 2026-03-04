@@ -1,0 +1,8 @@
+{
+    "_설명": "PostgreSQL로 마이그레이션 시 제외할 컬럼 목록. 소스(MySQL) 테이블명을 키로 사용.",
+    "_예시": "해당 테이블의 컬럼명 배열을 지정하면 SELECT/INSERT 대상에서 제외됩니다.",
+    "_참고": "MIGRATION_MATERIAL_PARSE의 파싱 컬럼(matnr)은 자동 제외되므로 여기에 등록 불필요.",
+
+    "eai_mt_zspmt_aibot_equip_error_monit": [],
+    "eai_mt_zspmt_aibot_material_master": []
+}

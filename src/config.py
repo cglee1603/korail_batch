@@ -305,6 +305,57 @@ DECRYPTED_DIR.mkdir(parents=True, exist_ok=True)
 # 복호화 타임아웃 (초)
 DECRYPTION_TIMEOUT = int(os.getenv("DECRYPTION_TIMEOUT", "60"))
 
+# ==================== DB 마이그레이션 설정 (MySQL → PostgreSQL) ====================
+
+# 소스 DB (MySQL) 연결 문자열
+# 예: mysql+pymysql://user:pass@host:3306/source_db
+MIGRATION_SOURCE_DB = os.getenv("MIGRATION_SOURCE_DB", "")
+
+# 대상 DB (PostgreSQL) 연결 문자열
+# 예: postgresql+psycopg2://user:pass@host:5432/target_db
+MIGRATION_TARGET_DB = os.getenv("MIGRATION_TARGET_DB", "")
+
+# 테이블 매핑 (콤마 구분, 소스:대상 형식)
+# 소스와 대상 테이블명이 다를 경우 콜론으로 구분
+# 예: eai_table_a:mt_table_a,eai_table_b:mt_table_b
+# 동일 이름이면 콜론 없이: my_table (소스=대상 동일)
+MIGRATION_TABLES = os.getenv("MIGRATION_TABLES", "")
+if MIGRATION_TABLES:
+    MIGRATION_TABLES = [t.strip() for t in MIGRATION_TABLES.split(',') if t.strip()]
+else:
+    MIGRATION_TABLES = []
+
+# 자재 사용 파싱 설정
+# 소스 테이블의 특정 컬럼(자재,수량,단위/자재,수량,단위 형식)을 파싱하여
+# 정규화된 별도 테이블에 적재
+# 형식: "소스테이블:파싱컬럼:키컬럼:대상테이블"
+# 예: eai_mt_zspmt_aibot_equip_error_monit:matnr:order_no:mt_material_usage
+MIGRATION_MATERIAL_PARSE = os.getenv("MIGRATION_MATERIAL_PARSE", "")
+
+# 제외 컬럼 설정 파일 경로
+# JSON 형식: { "소스테이블명": ["제외컬럼1", "제외컬럼2"], ... }
+# 지정된 컬럼은 SELECT/INSERT 대상에서 제외됨
+MIGRATION_EXCLUDE_COLUMNS_FILE = os.getenv(
+    "MIGRATION_EXCLUDE_COLUMNS_FILE",
+    os.path.join(os.path.dirname(__file__), "exclude_columns.json"),
+)
+
+# 테스트 모드 (true/false)
+# true 시 각 테이블에서 MIGRATION_TEST_LIMIT 행만 추출하여 마이그레이션
+MIGRATION_TEST_MODE = os.getenv("MIGRATION_TEST_MODE", "false").lower() == "true"
+
+# 테스트 모드에서 추출할 최대 행 수
+MIGRATION_TEST_LIMIT = int(os.getenv("MIGRATION_TEST_LIMIT", "10"))
+
+# 배치 크기 (한 번에 처리할 행 수)
+MIGRATION_BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "1000"))
+
+# 기존 데이터 처리 방식: "append", "replace", "upsert"
+MIGRATION_MODE = os.getenv("MIGRATION_MODE", "replace")
+
+# 일배치 스케줄 (HH:MM 형식, 비어있으면 수동 실행)
+MIGRATION_SCHEDULE = os.getenv("MIGRATION_SCHEDULE", "")
+
 # ==================== 다운로드 캐시 자동 정리 설정 ====================
 # 프로그램 시작 시 다운로드 캐시 자동 정리 (true/false)
 AUTO_CLEAN_DOWNLOAD_CACHE = os.getenv("AUTO_CLEAN_DOWNLOAD_CACHE", "false").lower() == "true"

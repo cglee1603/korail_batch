@@ -186,3 +186,104 @@ class ParseResponse(BaseModel):
     dataset_name: str
     message: str
     details: Optional[Dict[str, Any]] = None
+
+
+# ==================== DB 마이그레이션 ====================
+
+class MigrationRequest(BaseModel):
+    """DB 마이그레이션 실행 요청"""
+    tables: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "테이블 매핑 목록 (미지정 시 환경변수 MIGRATION_TABLES 사용). "
+            "형식: ['source:target', ...] 또는 ['table'] (소스=대상 동일)"
+        ),
+    )
+    mode: Optional[str] = Field(
+        default=None,
+        description="적재 모드: replace, append, upsert (미지정 시 환경변수 MIGRATION_MODE 사용)",
+    )
+    material_parse_config: Optional[str] = Field(
+        default=None,
+        description=(
+            "자재 파싱 설정 (형식: 소스테이블:파싱컬럼:키컬럼:대상테이블). "
+            "미지정 시 환경변수 MIGRATION_MATERIAL_PARSE 사용. "
+            "예: eai_mt_zspmt_aibot_equip_error_monit:matnr:order_no:mt_material_usage"
+        ),
+    )
+    recreate_tables: bool = Field(
+        default=False,
+        description=(
+            "True면 대상 테이블을 DROP 후 재생성 (소스 스키마 변경 반영). "
+            "False면 기존 테이블 유지 (기본값)"
+        ),
+    )
+
+
+class MigrationTableResult(BaseModel):
+    """테이블별 마이그레이션 결과"""
+    source_table: str
+    target_table: str
+    mode: str
+    source_rows: int
+    target_rows: int = 0
+    excluded_columns: List[str] = []
+    status: str
+    error: Optional[str] = None
+    duration_seconds: Optional[float] = None
+
+
+class MigrationMaterialResult(BaseModel):
+    """자재 사용 파싱 결과"""
+    source_table: str
+    parse_column: str
+    key_column: str
+    target_table: str
+    source_rows: int
+    parsed_rows: int
+    skipped_rows: int = 0
+    status: str
+    error: Optional[str] = None
+    duration_seconds: Optional[float] = None
+
+
+class MigrationResponse(BaseModel):
+    """마이그레이션 실행 결과"""
+    started_at: str
+    completed_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    status: str
+    tables: List[MigrationTableResult] = []
+    material_usage: Optional[MigrationMaterialResult] = None
+    error: Optional[str] = None
+
+
+class MigrationTableInfo(BaseModel):
+    """테이블 상태 정보"""
+    table: str
+    exists: Optional[bool] = None
+    row_count: Optional[int] = None
+    columns: Optional[List[str]] = None
+    error: Optional[str] = None
+
+
+class MigrationInfoResponse(BaseModel):
+    """마이그레이션 테이블 정보 응답"""
+    tables: List[MigrationTableInfo] = []
+    material_usage: Optional[MigrationTableInfo] = None
+
+
+class MigrationCleanupResponse(BaseModel):
+    """마이그레이션 데이터 정리 응답"""
+    tables: List[Dict[str, Any]] = []
+    material_usage: Optional[Dict[str, Any]] = None
+    status: str
+
+
+class MigrationScheduleStatus(BaseModel):
+    """마이그레이션 스케줄 상태"""
+    schedule_enabled: bool
+    schedule_time: Optional[str] = None
+    last_run: Optional[str] = None
+    next_run: Optional[str] = None
+    message: str

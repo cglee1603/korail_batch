@@ -4,9 +4,12 @@ RAGFlow Plus 배치 프로그램 REST API 서버
 Excel/Filesystem 데이터를 RAGFlow 지식베이스에 업로드하는 배치 처리 API를 제공합니다.
 Database 처리는 batch(CLI)로만 수행합니다.
 """
+import time
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.requests import Request
 
 from api.models import (
     JobStatusResponse,
@@ -18,6 +21,8 @@ from api.excel_router import router as excel_router
 from api.filesystem_router import router as filesystem_router
 from api.knowledgebase_router import router as knowledgebase_router
 from api.parsing_router import router as parsing_router
+from api.migration_router import router as migration_router
+from logger import logger
 
 app = FastAPI(
     title="RAGFlow Plus Batch API",
@@ -25,6 +30,7 @@ app = FastAPI(
         "Excel/Filesystem 데이터를 RAGFlow 지식베이스에 업로드하는 배치 처리 API.\n\n"
         "**Excel**: 엑셀 파일을 파싱하여 지식베이스에 등록\n"
         "**Filesystem**: 지정 폴더를 스캔하여 지식베이스에 등록\n"
+        "**Migration**: MySQL → PostgreSQL 데이터 마이그레이션 (일배치 스케줄 지원)\n"
         "**Database**: batch(CLI) 전용 (`python run.py --source db`)\n\n"
         "비동기 작업은 `/jobs/{job_id}`로 상태를 조회합니다."
     ),
@@ -33,11 +39,86 @@ app = FastAPI(
 
 job_manager = JobManager()
 
+
+class RequestLoggingMiddleware:
+    """순수 ASGI 미들웨어 - 모든 HTTP 요청/응답을 로깅"""
+
+    SKIP_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path in self.SKIP_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        start_time = time.time()
+        request = Request(scope)
+        method = request.method
+        query = str(request.query_params) if request.query_params else ""
+        client_ip = request.client.host if request.client else "unknown"
+
+        recv = receive
+        body_text = ""
+
+        if method in ("POST", "PUT", "PATCH"):
+            body_chunks = []
+            while True:
+                message = await receive()
+                body_chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+
+            body_bytes = b"".join(body_chunks)
+            if body_bytes:
+                body_text = body_bytes.decode("utf-8", errors="replace")
+
+            replayed = False
+
+            async def receive_replay():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                return {"type": "http.disconnect"}
+
+            recv = receive_replay
+
+        log_parts = [f"[Request] {method} {path}", f"client={client_ip}"]
+        if query:
+            log_parts.append(f"query={query}")
+        if body_text:
+            log_parts.append(f"body={body_text}")
+        logger.info(" | ".join(log_parts))
+
+        status_code = 500
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        await self.app(scope, recv, send_wrapper)
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        logger.info(f"[Response] {method} {path} | status={status_code} | {elapsed_ms:.1f}ms")
+
+
+app.add_middleware(RequestLoggingMiddleware)
+
 # 라우터 등록
 app.include_router(excel_router)
 app.include_router(filesystem_router)
 app.include_router(knowledgebase_router)
 app.include_router(parsing_router)
+app.include_router(migration_router)
 
 
 # ==================== 공통 엔드포인트 ====================
