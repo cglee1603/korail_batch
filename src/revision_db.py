@@ -164,6 +164,26 @@ class RevisionDB:
                 """).format(qualified('mt_processed_urls'))
             )
             
+            # 파일 구조 테이블
+            cursor.execute(
+                sql.SQL("""
+                    CREATE TABLE IF NOT EXISTS {} (
+                        id BIGINT NOT NULL PRIMARY KEY,
+                        par_id BIGINT,
+                        folder_name CHARACTER VARYING(100),
+                        file_name CHARACTER VARYING(100),
+                        file_path CHARACTER VARYING(500),
+                        dataset_name CHARACTER VARYING(100),
+                        root_path CHARACTER VARYING(100) NOT NULL,
+                        create_at CHARACTER VARYING(100) NOT NULL DEFAULT CURRENT_TIMESTAMP::CHARACTER VARYING,
+                        create_user_id CHARACTER VARYING(100),
+                        update_at CHARACTER VARYING(100) NOT NULL DEFAULT CURRENT_TIMESTAMP::CHARACTER VARYING,
+                        update_user_id CHARACTER VARYING(100),
+                        del_yn CHARACTER VARYING(100) DEFAULT 'N'::character varying
+                    )
+                """).format(qualified('mt_file_list'))
+            )
+            
             # 인덱스 생성
             cursor.execute(
                 sql.SQL("""
@@ -198,6 +218,27 @@ class RevisionDB:
                     CREATE INDEX IF NOT EXISTS idx_processed_url 
                     ON {}(url)
                 """).format(qualified('mt_processed_urls'))
+            )
+            
+            cursor.execute(
+                sql.SQL("""
+                    CREATE INDEX IF NOT EXISTS idx_file_list_root_path 
+                    ON {}(root_path)
+                """).format(qualified('mt_file_list'))
+            )
+            
+            cursor.execute(
+                sql.SQL("""
+                    CREATE INDEX IF NOT EXISTS idx_file_list_par_id 
+                    ON {}(par_id)
+                """).format(qualified('mt_file_list'))
+            )
+            
+            cursor.execute(
+                sql.SQL("""
+                    CREATE INDEX IF NOT EXISTS idx_file_list_dataset 
+                    ON {}(dataset_name)
+                """).format(qualified('mt_file_list'))
             )
             
             # 기존 테이블에 file_id 컬럼 추가 (마이그레이션)
@@ -350,6 +391,84 @@ class RevisionDB:
                 cursor.close()
                 self._put_connection(conn)
     
+    def get_documents_by_file_path(self, file_path: str) -> List[Dict]:
+        """
+        파일 경로로 관련 mt_documents 레코드 조회
+        
+        1차: mt_documents.file_path 직접 매칭
+        2차: 1차 실패 시 (Excel simplified 등 변환 파일)
+             mt_file_list에서 root_path를 조회하여 document_key를 역산 후
+             mt_documents.document_key로 재조회
+        
+        Args:
+            file_path: 원본 파일 절대 경로
+        
+        Returns:
+            문서 목록 (document_id, dataset_id, document_key 등 포함)
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            # 1차: file_path 직접 매칭
+            cursor.execute(
+                sql.SQL("""
+                    SELECT * FROM {} 
+                    WHERE file_path = %s
+                    ORDER BY created_at ASC
+                """).format(qualified('mt_documents')),
+                (file_path,)
+            )
+            rows = cursor.fetchall()
+            if rows:
+                return [dict(row) for row in rows]
+            
+            # 2차: mt_file_list에서 root_path 조회 → document_key 역산
+            cursor.execute(
+                sql.SQL("""
+                    SELECT root_path FROM {}
+                    WHERE file_path = %s
+                    LIMIT 1
+                """).format(qualified('mt_file_list')),
+                (file_path,)
+            )
+            file_node = cursor.fetchone()
+            if not file_node:
+                return []
+            
+            root_path = file_node['root_path']
+            try:
+                from pathlib import Path as _Path
+                rel_path = _Path(file_path).relative_to(root_path)
+                document_key = str(rel_path).replace('\\', '/')
+            except ValueError:
+                return []
+            
+            cursor.execute(
+                sql.SQL("""
+                    SELECT * FROM {}
+                    WHERE document_key = %s
+                    ORDER BY created_at ASC
+                """).format(qualified('mt_documents')),
+                (document_key,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        
+        except Exception as e:
+            logger.error(f"file_path로 문서 조회 실패 ({file_path}): {e}")
+            return []
+        finally:
+            if conn:
+                cursor.close()
+                self._put_connection(conn)
+
     def get_mt_documents_by_key(self, document_key: str, dataset_id: str) -> List[Dict]:
         """
         동일한 document_key를 가진 모든 문서 조회 (압축 파일 등)
@@ -1020,6 +1139,213 @@ class RevisionDB:
                 cursor.close()
                 self._put_connection(conn)
     
+    # ==================== 파일 목록 관리 (mt_file_list) ====================
+
+    def save_file_structure_node(
+        self,
+        node_id: int,
+        par_id: Optional[int],
+        folder_name: Optional[str],
+        file_name: Optional[str],
+        dataset_name: str,
+        root_path: str,
+        file_path: Optional[str] = None,
+        create_user_id: str = None,
+        update_user_id: str = None
+    ) -> Optional[int]:
+        """
+        파일 구조 노드 저장
+        
+        Args:
+            node_id: 노드 ID (호출자가 지정)
+            par_id: 부모 노드 ID (None이면 최상위)
+            folder_name: 폴더명 (폴더 노드인 경우)
+            file_name: 파일명 (파일 노드인 경우)
+            dataset_name: 데이터셋 이름
+            root_path: 스캔 루트 경로
+            file_path: 파일 절대 경로 (파일 노드인 경우)
+            create_user_id: 생성자 ID
+            update_user_id: 수정자 ID
+        
+        Returns:
+            저장된 노드 ID 또는 None
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("""
+                    INSERT INTO {} 
+                    (id, par_id, folder_name, file_name, file_path, dataset_name, root_path,
+                     create_at, create_user_id, update_at, update_user_id, del_yn)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'N')
+                """).format(qualified('mt_file_list')),
+                (node_id, par_id, folder_name, file_name, file_path, dataset_name, root_path,
+                 now, create_user_id, now, update_user_id)
+            )
+            
+            conn.commit()
+            return node_id
+        
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"파일 구조 노드 저장 실패: {e}")
+            return None
+        finally:
+            if conn:
+                cursor.close()
+                self._put_connection(conn)
+
+    def clear_file_structure(self, root_path: str) -> int:
+        """
+        특정 root_path의 파일 구조 전체 삭제
+        
+        Args:
+            root_path: 스캔 루트 경로
+        
+        Returns:
+            삭제된 노드 수
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE root_path = %s").format(qualified('mt_file_list')),
+                (root_path,)
+            )
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"파일 구조 초기화: {root_path} ({deleted_count}개 노드)")
+            return deleted_count
+        
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"파일 구조 초기화 실패: {e}")
+            return 0
+        finally:
+            if conn:
+                cursor.close()
+                self._put_connection(conn)
+
+    def get_file_structure(self, root_path: str = None, dataset_name: str = None) -> List[Dict]:
+        """
+        파일 구조 조회
+        
+        Args:
+            root_path: 스캔 루트 경로 (None이면 전체)
+            dataset_name: 데이터셋 이름 (None이면 전체)
+        
+        Returns:
+            파일 구조 노드 목록
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+            
+            conditions = []
+            params = []
+            
+            if root_path:
+                conditions.append(sql.SQL("root_path = %s"))
+                params.append(root_path)
+            if dataset_name:
+                conditions.append(sql.SQL("dataset_name = %s"))
+                params.append(dataset_name)
+            
+            if conditions:
+                where_clause = sql.SQL(" AND ").join(conditions)
+            else:
+                where_clause = sql.SQL("TRUE")
+            
+            cursor.execute(
+                sql.SQL("SELECT * FROM {} WHERE {} ORDER BY id").format(
+                    qualified('mt_file_list'),
+                    where_clause
+                ),
+                params
+            )
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        
+        except Exception as e:
+            logger.error(f"파일 구조 조회 실패: {e}")
+            return []
+        finally:
+            if conn:
+                cursor.close()
+                self._put_connection(conn)
+
+    def delete_file_structure_node_by_path(self, file_path: str) -> int:
+        """
+        파일 경로로 mt_file_list에서 해당 노드 삭제
+        
+        Args:
+            file_path: 삭제할 파일의 절대 경로
+        
+        Returns:
+            삭제된 노드 수
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            def qualified(table_name: str):
+                if getattr(self, 'schema_name', None):
+                    return sql.SQL('.').join([sql.Identifier(self.schema_name), sql.Identifier(table_name)])
+                return sql.Identifier(table_name)
+
+            cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE file_path = %s").format(qualified('mt_file_list')),
+                (file_path,)
+            )
+
+            deleted = cursor.rowcount
+            conn.commit()
+
+            if deleted > 0:
+                logger.info(f"파일 구조 노드 삭제: {file_path}")
+            return deleted
+
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"파일 구조 노드 삭제 실패 ({file_path}): {e}")
+            return 0
+        finally:
+            if conn:
+                cursor.close()
+                self._put_connection(conn)
+
+    # Backward compatibility aliases
+    ㄹㄹ = get_all_mt_documents
+    get_documents_by_dataset_name = get_mt_documents_by_dataset_name
+
     def close(self):
         """연결 풀 종료"""
         if hasattr(self, 'connection_pool') and self.connection_pool:

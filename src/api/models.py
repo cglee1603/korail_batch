@@ -92,6 +92,19 @@ class FilesystemBatchRequest(BaseModel):
     filesystem_path: str = Field(..., description="스캔할 파일시스템 루트 디렉토리 경로")
 
 
+class FileDeleteRequest(BaseModel):
+    """로컬 파일 삭제 요청"""
+    file_path: str = Field(..., description="삭제할 파일의 절대 경로")
+
+
+class FileDeleteResponse(BaseModel):
+    """로컬 파일 삭제 응답"""
+    file_path: str = Field(..., description="삭제 요청된 파일 경로")
+    deleted: bool = Field(..., description="삭제 성공 여부")
+    message: str = Field(..., description="결과 메시지")
+    ragflow_deleted: int = Field(default=0, description="RAGFlow에서 삭제된 문서 수")
+
+
 # ==================== 지식베이스 ====================
 
 class KnowledgebaseItem(BaseModel):

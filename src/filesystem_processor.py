@@ -107,7 +107,10 @@ class FilesystemProcessor:
                         logger.warning(f"경로 오류 (Skip): {file_path}")
                         continue
 
-            # 2. Dataset별 처리
+            # 2. 파일 구조를 DB에 저장
+            self._save_file_structure(dataset_files)
+
+            # 3. Dataset별 처리
             for dataset_name, files in dataset_files.items():
                 self._process_dataset(dataset_name, files)
 
@@ -117,6 +120,84 @@ class FilesystemProcessor:
             logger.error(f"Filesystem 처리 중 오류 발생: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    def _save_file_structure(self, dataset_files: Dict[str, List[Path]]):
+        """파일시스템 구조를 DB(mt_file_list)에 저장"""
+        root_path_str = str(self.root_path)
+        
+        logger.info(f"파일 구조 DB 저장 시작: {root_path_str}")
+        
+        self.revision_db.clear_file_structure(root_path_str)
+        
+        dir_id_map: Dict[str, int] = {}
+        next_id = 1
+        
+        # 루트 폴더를 최상단 노드로 등록 (par_id=NULL)
+        root_node_id = self.revision_db.save_file_structure_node(
+            node_id=next_id,
+            par_id=None,
+            folder_name=self.root_path.name,
+            file_name=None,
+            dataset_name=None,
+            root_path=root_path_str
+        )
+        if root_node_id is not None:
+            dir_id_map[str(self.root_path)] = next_id
+        next_id += 1
+        
+        for root, dirs, files_in_dir in os.walk(self.root_path):
+            dirs[:] = sorted([d for d in dirs if not d.startswith('.')])
+            
+            current_path = Path(root)
+            
+            if current_path != self.root_path:
+                folder_name = current_path.name
+                parent_path = str(current_path.parent)
+                par_id = dir_id_map.get(parent_path)
+                
+                try:
+                    rel_path = current_path.relative_to(self.root_path)
+                    dataset_name = self._get_dataset_name(rel_path)
+                except ValueError:
+                    dataset_name = "Default"
+                
+                node_id = self.revision_db.save_file_structure_node(
+                    node_id=next_id,
+                    par_id=par_id,
+                    folder_name=folder_name,
+                    file_name=None,
+                    dataset_name=dataset_name,
+                    root_path=root_path_str
+                )
+                if node_id is not None:
+                    dir_id_map[str(current_path)] = next_id
+                next_id += 1
+            
+            for file in sorted(files_in_dir):
+                if file.startswith('.'):
+                    continue
+                
+                file_path = current_path / file
+                try:
+                    rel_path = file_path.relative_to(self.root_path)
+                    ds_name = self._get_dataset_name(rel_path)
+                except ValueError:
+                    ds_name = "Default"
+                
+                parent_id = dir_id_map.get(str(current_path))
+                
+                self.revision_db.save_file_structure_node(
+                    node_id=next_id,
+                    par_id=parent_id,
+                    folder_name=current_path.name if current_path != self.root_path else None,
+                    file_name=file,
+                    dataset_name=ds_name,
+                    root_path=root_path_str,
+                    file_path=str(file_path.resolve())
+                )
+                next_id += 1
+        
+        logger.info(f"파일 구조 DB 저장 완료: {next_id - 1}개 노드")
 
     def _process_dataset(self, dataset_name: str, files: List[Path]):
         """개별 Dataset 처리"""
@@ -297,6 +378,35 @@ class FilesystemProcessor:
                 import traceback
                 logger.error(traceback.format_exc())
 
+        # 4. 삭제된 파일 감지 및 처리
+        current_file_keys = set()
+        for file_path in files:
+            try:
+                rel_path = file_path.relative_to(self.root_path)
+                document_key = str(rel_path).replace('\\', '/')
+                current_file_keys.add(document_key)
+            except ValueError:
+                continue
+
+        deleted_keys = set(db_doc_map.keys()) - current_file_keys
+
+        if deleted_keys:
+            logger.info(f"[{dataset_name}] 삭제된 파일 감지: {len(deleted_keys)}개")
+            for doc_key in deleted_keys:
+                docs = db_doc_map[doc_key]
+                for doc in docs:
+                    doc_id = doc.get('document_id')
+                    file_name = doc.get('file_name', 'Unknown')
+                    if doc_id:
+                        if self.ragflow_client.delete_document(dataset, doc_id):
+                            logger.info(f"  [Delete] RAGFlow 삭제: {file_name} ({doc_key})")
+                            self.stats['deleted_files'] += 1
+                        else:
+                            logger.error(f"  [Delete] RAGFlow 삭제 실패: {file_name}")
+                
+                self.revision_db.delete_document(doc_key, dataset_id)
+                logger.info(f"  [Delete] DB 삭제: {doc_key}")
+
         # 일괄 파싱 시작
         if uploaded_doc_ids:
             if AUTO_PARSE_AFTER_UPLOAD:
@@ -320,6 +430,7 @@ class FilesystemProcessor:
         logger.info(f"신규 추가: {self.stats['new_files']}")
         logger.info(f"업데이트: {self.stats['updated_files']}")
         logger.info(f"건너뜀 (변경없음): {self.stats['skipped_files']}")
+        logger.info(f"삭제 (파일시스템에서 제거됨): {self.stats['deleted_files']}")
         logger.info(f"실패: {self.stats['failed_files']}")
         logger.info(f"생성된 Dataset: {self.stats['datasets_created']}")
         logger.info("="*80)
