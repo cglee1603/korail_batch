@@ -315,9 +315,10 @@ MIGRATION_SOURCE_DB = os.getenv("MIGRATION_SOURCE_DB", "")
 # 예: postgresql+psycopg2://user:pass@host:5432/target_db
 MIGRATION_TARGET_DB = os.getenv("MIGRATION_TARGET_DB", "")
 
-# 테이블 매핑 (콤마 구분, 소스:대상 형식)
+# 테이블 매핑 (콤마 구분, 소스:대상 또는 소스:대상:모드)
 # 소스와 대상 테이블명이 다를 경우 콜론으로 구분
-# 예: eai_table_a:mt_table_a,eai_table_b:mt_table_b
+# 테이블별 적재 모드는 세 번째 인자로 지정 가능 (미지정 시 MIGRATION_MODE 사용)
+# 예: eai_table_a:mt_table_a:replace,eai_table_b:mt_table_b:append
 # 동일 이름이면 콜론 없이: my_table (소스=대상 동일)
 MIGRATION_TABLES = os.getenv("MIGRATION_TABLES", "")
 if MIGRATION_TABLES:
@@ -325,11 +326,8 @@ if MIGRATION_TABLES:
 else:
     MIGRATION_TABLES = []
 
-# 자재 사용 파싱 설정
-# 소스 테이블의 특정 컬럼(자재,수량,단위/자재,수량,단위 형식)을 파싱하여
-# 정규화된 별도 테이블에 적재
-# 형식: "소스테이블:파싱컬럼:키컬럼:대상테이블"
-# 예: eai_mt_zspmt_aibot_equip_error_monit:matnr:order_no:mt_material_usage
+# 자재 사용 파싱 설정 (조인 키 isnum 고정)
+# 형식: "소스테이블:파싱컬럼:대상테이블"
 MIGRATION_MATERIAL_PARSE = os.getenv("MIGRATION_MATERIAL_PARSE", "")
 
 # 제외 컬럼 설정 파일 경로
@@ -355,6 +353,12 @@ MIGRATION_MODE = os.getenv("MIGRATION_MODE", "replace")
 
 # 일배치 스케줄 (HH:MM 형식, 비어있으면 수동 실행)
 MIGRATION_SCHEDULE = os.getenv("MIGRATION_SCHEDULE", "")
+
+# 적재 완료 후 MySQL 소스 테이블 데이터 삭제 (true/false, 기본 false)
+# true 시 PG 적재 성공 후 해당 소스 테이블 TRUNCATE (개발 시 꺼두고 운영에서 켜기)
+MIGRATION_DELETE_SOURCE_AFTER_LOAD = os.getenv(
+    "MIGRATION_DELETE_SOURCE_AFTER_LOAD", "false"
+).lower() == "true"
 
 # ==================== 다운로드 캐시 자동 정리 설정 ====================
 # 프로그램 시작 시 다운로드 캐시 자동 정리 (true/false)

@@ -87,7 +87,13 @@ def _resolve_env_params() -> tuple:
     return MIGRATION_TABLES, MIGRATION_MATERIAL_PARSE
 
 
-def _execute_migration(tables, mode, material_config, recreate_tables=False) -> dict:
+def _execute_migration(
+    tables,
+    mode,
+    material_config,
+    recreate_tables=False,
+    delete_source_after_load=False,
+) -> dict:
     """마이그레이션 실행 (동기)"""
     from config import MIGRATION_EXCLUDE_COLUMNS_FILE
     global _last_run_time
@@ -100,6 +106,7 @@ def _execute_migration(tables, mode, material_config, recreate_tables=False) -> 
             material_parse_config=material_config,
             recreate_tables=recreate_tables,
             exclude_columns_file=MIGRATION_EXCLUDE_COLUMNS_FILE,
+            delete_source_after_load=delete_source_after_load,
         )
         _last_run_time = datetime.now().isoformat()
         return result
@@ -107,11 +114,24 @@ def _execute_migration(tables, mode, material_config, recreate_tables=False) -> 
         migrator.close()
 
 
-def _run_migration_background(job_id: str, tables, mode, material_config, recreate_tables=False):
+def _run_migration_background(
+    job_id: str,
+    tables,
+    mode,
+    material_config,
+    recreate_tables=False,
+    delete_source_after_load=False,
+):
     """백그라운드 마이그레이션 작업"""
     job_manager.start_job(job_id)
     try:
-        result = _execute_migration(tables, mode, material_config, recreate_tables)
+        result = _execute_migration(
+            tables,
+            mode,
+            material_config,
+            recreate_tables,
+            delete_source_after_load,
+        )
         job_manager.complete_job(job_id, result)
         logger.info(f"[Migration Job {job_id}] 완료: {result.get('status')}")
     except Exception as e:
@@ -135,7 +155,7 @@ async def migration_run_async(
     - **tables**: 테이블 매핑 목록 (["source:target", ...])
     - **mode**: replace / append / upsert
     - **material_parse_config**: 자재 파싱 설정
-      (소스테이블:파싱컬럼:키컬럼:대상테이블)
+      (소스테이블:파싱컬럼:대상테이블)
 
     반환된 `job_id`로 `/jobs/{job_id}`에서 진행 상황을 조회할 수 있습니다.
     """
@@ -143,6 +163,8 @@ async def migration_run_async(
         tables, mode, material_config, recreate = _resolve_params(request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    from config import MIGRATION_DELETE_SOURCE_AFTER_LOAD
 
     job_id = job_manager.create_job(
         job_type="db_migration",
@@ -154,7 +176,13 @@ async def migration_run_async(
         },
     )
     background_tasks.add_task(
-        _run_migration_background, job_id, tables, mode, material_config, recreate
+        _run_migration_background,
+        job_id,
+        tables,
+        mode,
+        material_config,
+        recreate,
+        MIGRATION_DELETE_SOURCE_AFTER_LOAD,
     )
 
     logger.info(f"[API] 마이그레이션 작업 생성: {job_id} (테이블: {tables})")
@@ -181,8 +209,16 @@ async def migration_run_sync(request: MigrationRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    from config import MIGRATION_DELETE_SOURCE_AFTER_LOAD
+
     try:
-        result = _execute_migration(tables, mode, material_config, recreate)
+        result = _execute_migration(
+            tables,
+            mode,
+            material_config,
+            recreate,
+            MIGRATION_DELETE_SOURCE_AFTER_LOAD,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -252,7 +288,12 @@ async def cleanup_tables(confirm: bool = False):
 
 def _scheduled_migration_job():
     """스케줄러에 의해 호출되는 마이그레이션 작업"""
-    from config import MIGRATION_TABLES, MIGRATION_MODE, MIGRATION_MATERIAL_PARSE
+    from config import (
+        MIGRATION_TABLES,
+        MIGRATION_MODE,
+        MIGRATION_MATERIAL_PARSE,
+        MIGRATION_DELETE_SOURCE_AFTER_LOAD,
+    )
 
     logger.info("[Schedule] 일배치 마이그레이션 실행 시작")
     try:
@@ -260,6 +301,8 @@ def _scheduled_migration_job():
             tables=MIGRATION_TABLES,
             mode=MIGRATION_MODE,
             material_config=MIGRATION_MATERIAL_PARSE,
+            recreate_tables=False,
+            delete_source_after_load=MIGRATION_DELETE_SOURCE_AFTER_LOAD,
         )
     except Exception as e:
         logger.error(f"[Schedule] 일배치 마이그레이션 실패: {e}")

@@ -7,7 +7,7 @@ DB 마이그레이션 모듈 (MySQL → PostgreSQL)
 데이터 흐름:
   [MySQL] eai_mt_zspmt_aibot_equip_error_monit
       ├─ (matnr 제외) ──→ [PG] mt_zspmt_aibot_equip_error_monit
-      └─ order_no + matnr 파싱 ──→ [PG] mt_material_usage
+      └─ isnum + matnr 파싱 ──→ [PG] mt_material_usage
 
   [MySQL] eai_mt_zspmt_aibot_material_master
       └─ 전체 ──→ [PG] mt_zspmt_aibot_material_master
@@ -91,14 +91,21 @@ class DBMigrator:
             conn.execute(text("SELECT 1"))
         logger.info("대상 DB(PostgreSQL) 연결 성공")
 
+    _VALID_MODES = ('replace', 'append', 'upsert')
+
     @staticmethod
-    def parse_table_mapping(table_spec: str) -> Tuple[str, str]:
-        """'source:target' 또는 'table' 형식을 (source, target) 튜플로 변환"""
-        if ':' in table_spec:
-            src, tgt = table_spec.split(':', 1)
-            return src.strip(), tgt.strip()
-        name = table_spec.strip()
-        return name, name
+    def parse_table_mapping(table_spec: str) -> Tuple[str, str, Optional[str]]:
+        """
+        'source:target' 또는 'source:target:mode' 형식을 (source, target, mode) 튜플로 변환.
+        mode가 생략되면 None (전역 기본값 사용).
+        """
+        spec = table_spec.strip()
+        parts = [p.strip() for p in spec.split(':')]
+        if len(parts) >= 3 and parts[-1].lower() in DBMigrator._VALID_MODES:
+            return parts[0], ':'.join(parts[1:-1]), parts[-1].lower()
+        if len(parts) >= 2:
+            return parts[0], ':'.join(parts[1:]), None
+        return parts[0], parts[0], None
 
     @staticmethod
     def load_exclude_columns(file_path: str) -> Dict[str, List[str]]:
@@ -141,25 +148,23 @@ class DBMigrator:
     @staticmethod
     def parse_material_config(config_str: str) -> Optional[Dict[str, str]]:
         """
-        자재 파싱 설정 문자열을 딕셔너리로 변환
-
-        형식: '소스테이블:파싱컬럼:키컬럼:대상테이블'
-        반환: {'source_table', 'parse_column', 'key_column', 'target_table'}
+        자재 파싱 설정 문자열을 딕셔너리로 변환.
+        키 컬럼은 isnum 고정.
+        형식: '소스테이블:파싱컬럼:대상테이블'
         """
         if not config_str or not config_str.strip():
             return None
         parts = config_str.strip().split(':')
-        if len(parts) != 4:
+        if len(parts) != 3:
             logger.warning(
                 f"자재 파싱 설정 형식 오류: '{config_str}' "
-                f"(올바른 형식: 소스테이블:파싱컬럼:키컬럼:대상테이블)"
+                f"(올바른 형식: 소스테이블:파싱컬럼:대상테이블)"
             )
             return None
         return {
             'source_table': parts[0].strip(),
             'parse_column': parts[1].strip(),
-            'key_column': parts[2].strip(),
-            'target_table': parts[3].strip(),
+            'target_table': parts[2].strip(),
         }
 
     def _serialize_value(self, value: Any) -> Any:
@@ -251,7 +256,7 @@ class DBMigrator:
         logger.info(f"대상 테이블 {action}: {target_table} ({len(cols)}개 컬럼)")
 
     def _ensure_material_usage_table(self, table_name: str, recreate: bool = False):
-        """mt_material_usage 테이블 생성"""
+        """mt_material_usage 테이블 생성. 조인 키는 isnum VARCHAR(40) 고정."""
         if recreate:
             self._drop_target_table(table_name)
 
@@ -259,7 +264,7 @@ class DBMigrator:
             conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     id SERIAL PRIMARY KEY,
-                    order_no TEXT NOT NULL,
+                    isnum VARCHAR(40) NOT NULL,
                     matnr TEXT,
                     menge TEXT,
                     meins TEXT,
@@ -267,8 +272,8 @@ class DBMigrator:
                 )
             """))
             conn.execute(text(f"""
-                CREATE INDEX IF NOT EXISTS idx_{table_name}_order_no
-                ON {table_name}(order_no)
+                CREATE INDEX IF NOT EXISTS idx_{table_name}_isnum
+                ON {table_name}(isnum)
             """))
         action = "재생성" if recreate else "확인/생성"
         logger.info(f"자재 사용 테이블 {action} 완료: {table_name}")
@@ -323,11 +328,50 @@ class DBMigrator:
             conn.execute(text(insert_sql), batch)
             logger.debug(f"[Insert] {table_name}: {min(i + self.batch_size, total)}/{total}")
 
+    def _get_fks_referencing_table(self, table_name: str) -> List[Dict[str, str]]:
+        """이 테이블을 참조하는 FK 목록 (다른 테이블이 이 테이블을 가리키는 FK)."""
+        sql = text("""
+            SELECT c.conname AS constraint_name,
+                   (SELECT relname FROM pg_class WHERE oid = c.conrelid) AS referring_table,
+                   pg_get_constraintdef(c.oid) AS constraint_def
+            FROM pg_constraint c
+            WHERE c.contype = 'f'
+              AND c.confrelid = CAST(:tname AS regclass)
+        """)
+        with self.target_engine.connect() as conn:
+            rows = conn.execute(sql, {"tname": table_name}).fetchall()
+        return [
+            {
+                "constraint_name": r[0],
+                "referring_table": r[1],
+                "constraint_def": r[2],
+            }
+            for r in rows
+        ]
+
     def _load_replace(self, table_name: str, rows: List[Dict]):
+        fks = self._get_fks_referencing_table(table_name)
         with self.target_engine.begin() as conn:
+            for fk in fks:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{fk["referring_table"]}" '
+                        f'DROP CONSTRAINT IF EXISTS "{fk["constraint_name"]}"'
+                    )
+                )
             conn.execute(text(f"TRUNCATE TABLE {table_name}"))
             self._batch_insert(conn, table_name, rows)
-        logger.info(f"[Load] {table_name}: TRUNCATE + INSERT {len(rows)}행")
+            for fk in fks:
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{fk["referring_table"]}" '
+                        f'ADD CONSTRAINT "{fk["constraint_name"]}" {fk["constraint_def"]}'
+                    )
+                )
+        if fks:
+            logger.info(f"[Load] {table_name}: FK {len(fks)}개 일시 제거 → TRUNCATE + INSERT {len(rows)}행 → FK 복구")
+        else:
+            logger.info(f"[Load] {table_name}: TRUNCATE + INSERT {len(rows)}행")
 
     def _load_append(self, table_name: str, rows: List[Dict]):
         with self.target_engine.begin() as conn:
@@ -378,6 +422,21 @@ class DBMigrator:
             self._load_upsert(table_name, rows, pk_columns)
         else:
             raise ValueError(f"지원하지 않는 적재 모드: {mode}")
+
+    def _truncate_source_table(self, source_table: str) -> int:
+        """
+        MySQL 소스 테이블 데이터 전량 삭제 (TRUNCATE).
+        적재 완료 후 소스 정리용. 실패 시 예외 발생.
+        반환: 삭제 전 행 수 (로그용).
+        """
+        with self.source_engine.connect() as conn:
+            count = conn.execute(
+                text(f"SELECT COUNT(*) FROM `{source_table}`")
+            ).scalar()
+            conn.execute(text(f"TRUNCATE TABLE `{source_table}`"))
+            conn.commit()
+        logger.info(f"[Source cleanup] MySQL {source_table}: {count}행 삭제 (TRUNCATE)")
+        return count
 
     # ==================== 테이블 마이그레이션 ====================
 
@@ -488,27 +547,19 @@ class DBMigrator:
         self,
         source_table: str,
         parse_column: str,
-        key_column: str,
         target_table: str,
-        mode: str = "replace",
+        mode: str = "replace_by_isnum",
         recreate: bool = False,
     ) -> Dict[str, Any]:
         """
-        소스 테이블에서 matnr 컬럼을 파싱하여 정규화된 자재 사용 테이블에 적재
-
-        Args:
-            source_table: 소스(MySQL) 테이블명
-            parse_column: 파싱 대상 컬럼명 (예: matnr)
-            key_column: 키 컬럼명 (예: order_no)
-            target_table: 대상(PostgreSQL) 자재 사용 테이블명
-            mode: 적재 모드
-            recreate: True면 대상 테이블 DROP 후 재생성
+        소스 테이블에서 matnr 컬럼을 파싱하여 mt_material_usage에 적재.
+        조인 키는 isnum 고정.
+        mode: replace(전체 TRUNCATE 후 INSERT), replace_by_isnum(해당 isnum만 DELETE 후 INSERT), append
         """
         start = datetime.now()
         result = {
             'source_table': source_table,
             'parse_column': parse_column,
-            'key_column': key_column,
             'target_table': target_table,
             'source_rows': 0,
             'parsed_rows': 0,
@@ -520,7 +571,7 @@ class DBMigrator:
             self._ensure_material_usage_table(target_table, recreate=recreate)
 
             with self.source_engine.connect() as conn:
-                sql = f"SELECT {key_column}, {parse_column} FROM {source_table}"
+                sql = f"SELECT isnum, {parse_column} FROM {source_table}"
                 if self.test_limit > 0:
                     sql += f" LIMIT {self.test_limit}"
                 rows = conn.execute(text(sql)).fetchall()
@@ -533,7 +584,7 @@ class DBMigrator:
 
             material_rows = []
             for row in rows:
-                key_value = str(row[0]) if row[0] is not None else ''
+                isnum_value = str(row[0]) if row[0] is not None else ''
                 matnr_value = row[1]
 
                 parsed = self.parse_matnr(matnr_value)
@@ -543,7 +594,7 @@ class DBMigrator:
 
                 for entry in parsed:
                     material_rows.append({
-                        'order_no': key_value,
+                        'isnum': isnum_value,
                         'matnr': entry['matnr'],
                         'menge': entry['menge'],
                         'meins': entry['meins'],
@@ -561,6 +612,21 @@ class DBMigrator:
                     with self.target_engine.begin() as conn:
                         conn.execute(text(f"TRUNCATE TABLE {target_table}"))
                         self._batch_insert(conn, target_table, material_rows)
+                elif mode == 'replace_by_isnum':
+                    distinct_isnums = list({r['isnum'] for r in material_rows})
+                    with self.target_engine.begin() as conn:
+                        if distinct_isnums:
+                            placeholders = ", ".join(f":i{i}" for i in range(len(distinct_isnums)))
+                            params = {f"i{i}": v for i, v in enumerate(distinct_isnums)}
+                            conn.execute(
+                                text(f"DELETE FROM {target_table} WHERE isnum IN ({placeholders})"),
+                                params
+                            )
+                        self._batch_insert(conn, target_table, material_rows)
+                    logger.info(
+                        f"[Material] {target_table}: isnum {len(distinct_isnums)}건 DELETE 후 "
+                        f"{len(material_rows)}행 INSERT (replace_by_isnum)"
+                    )
                 else:
                     with self.target_engine.begin() as conn:
                         self._batch_insert(conn, target_table, material_rows)
@@ -594,7 +660,7 @@ class DBMigrator:
         result = {'tables': [], 'material_usage': None, 'status': 'success'}
 
         for spec in table_specs:
-            _, target_table = self.parse_table_mapping(spec)
+            _, target_table, _ = self.parse_table_mapping(spec)
             try:
                 insp = inspect(self.target_engine)
                 if not insp.has_table(target_table):
@@ -650,7 +716,7 @@ class DBMigrator:
         result = {'tables': [], 'material_usage': None}
 
         for spec in table_specs:
-            _, target_table = self.parse_table_mapping(spec)
+            _, target_table, _ = self.parse_table_mapping(spec)
             try:
                 insp = inspect(self.target_engine)
                 if not insp.has_table(target_table):
@@ -701,6 +767,7 @@ class DBMigrator:
         material_parse_config: str = "",
         recreate_tables: bool = False,
         exclude_columns_file: str = "",
+        delete_source_after_load: bool = False,
     ) -> Dict[str, Any]:
         """
         전체 마이그레이션 파이프라인
@@ -709,19 +776,22 @@ class DBMigrator:
             table_specs: 테이블 매핑 목록 (["source:target", ...])
             mode: 적재 모드 ("replace" | "append" | "upsert")
             material_parse_config: 자재 파싱 설정
-                ("소스테이블:파싱컬럼:키컬럼:대상테이블")
+                ("소스테이블:파싱컬럼:대상테이블")
             recreate_tables: True면 대상 테이블 DROP 후 재생성 (스키마 변경 반영)
             exclude_columns_file: 제외 컬럼 JSON 파일 경로
+            delete_source_after_load: True면 PG 적재 성공 후 MySQL 소스 테이블 TRUNCATE
         """
         start = datetime.now()
         overall = {
             'started_at': start.isoformat(),
             'tables': [],
             'material_usage': None,
+            'source_cleanup': [],
             'status': 'running',
         }
 
         mat_cfg = self.parse_material_config(material_parse_config)
+        material_parse_source = mat_cfg['source_table'] if mat_cfg else None
 
         exclude_map: Dict[str, List[str]] = self.load_exclude_columns(exclude_columns_file)
 
@@ -743,39 +813,86 @@ class DBMigrator:
         if exclude_map:
             for tbl, cols in exclude_map.items():
                 logger.info(f"제외 컬럼: {tbl} → {cols}")
-        if mat_cfg:
-            logger.info(
-                f"자재 파싱: {mat_cfg['source_table']}.{mat_cfg['parse_column']} "
-                f"(키: {mat_cfg['key_column']}) → {mat_cfg['target_table']}"
-            )
+            if mat_cfg:
+                logger.info(
+                    f"자재 파싱: {mat_cfg['source_table']}.{mat_cfg['parse_column']} "
+                    f"→ {mat_cfg['target_table']} (키: isnum)"
+                )
+        if delete_source_after_load:
+            logger.info("소스 정리: 적재 완료 후 MySQL 소스 테이블 TRUNCATE ON")
         logger.info("=" * 80)
 
         try:
             self._test_connections()
 
+            table_mode_by_source: Dict[str, str] = {}
             for spec in table_specs:
-                source_table, target_table = self.parse_table_mapping(spec)
+                source_table, target_table, mode_override = self.parse_table_mapping(spec)
+                table_mode = mode_override if mode_override else mode
+                table_mode_by_source[source_table] = table_mode
                 exclude_cols = exclude_map.get(source_table)
 
                 table_result = self.migrate_table(
                     source_table=source_table,
                     target_table=target_table,
-                    mode=mode,
+                    mode=table_mode,
                     exclude_columns=exclude_cols,
                     recreate=recreate_tables,
                 )
                 overall['tables'].append(table_result)
 
+                if (
+                    delete_source_after_load
+                    and table_result['status'] == 'success'
+                    and source_table != material_parse_source
+                ):
+                    try:
+                        deleted = self._truncate_source_table(source_table)
+                        overall['source_cleanup'].append({
+                            'source_table': source_table,
+                            'deleted_rows': deleted,
+                            'status': 'truncated',
+                        })
+                    except Exception as e:
+                        logger.error(f"[Source cleanup] MySQL {source_table} 실패: {e}")
+                        overall['source_cleanup'].append({
+                            'source_table': source_table,
+                            'status': 'failed',
+                            'error': str(e),
+                        })
+
             if mat_cfg:
+                material_mode = table_mode_by_source.get(
+                    mat_cfg['source_table'], mode
+                )
                 material_result = self.parse_and_load_material_usage(
                     source_table=mat_cfg['source_table'],
                     parse_column=mat_cfg['parse_column'],
-                    key_column=mat_cfg['key_column'],
                     target_table=mat_cfg['target_table'],
-                    mode=mode,
+                    mode="replace_by_isnum",
                     recreate=recreate_tables,
                 )
                 overall['material_usage'] = material_result
+
+                if (
+                    delete_source_after_load
+                    and material_result.get('status') == 'success'
+                ):
+                    src = mat_cfg['source_table']
+                    try:
+                        deleted = self._truncate_source_table(src)
+                        overall['source_cleanup'].append({
+                            'source_table': src,
+                            'deleted_rows': deleted,
+                            'status': 'truncated',
+                        })
+                    except Exception as e:
+                        logger.error(f"[Source cleanup] MySQL {src} 실패: {e}")
+                        overall['source_cleanup'].append({
+                            'source_table': src,
+                            'status': 'failed',
+                            'error': str(e),
+                        })
 
             failed = [t for t in overall['tables'] if t['status'] == 'failed']
             mat_failed = (
@@ -814,6 +931,14 @@ class DBMigrator:
                 f"  {icon} 자재 파싱: {m['source_table']}.{m['parse_column']} "
                 f"→ {m['target_table']} ({m['parsed_rows']}행)"
             )
+        for c in overall.get('source_cleanup', []):
+            icon = "✓" if c.get('status') == 'truncated' else "✗"
+            msg = f"  {icon} MySQL 소스 삭제: {c['source_table']}"
+            if c.get('deleted_rows') is not None:
+                msg += f" ({c['deleted_rows']}행)"
+            if c.get('status') == 'failed':
+                msg += f" 실패: {c.get('error', '')}"
+            logger.info(msg)
         logger.info("=" * 80)
 
         self.stats = overall

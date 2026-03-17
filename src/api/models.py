@@ -209,7 +209,7 @@ class MigrationRequest(BaseModel):
         default=None,
         description=(
             "테이블 매핑 목록 (미지정 시 환경변수 MIGRATION_TABLES 사용). "
-            "형식: ['source:target', ...] 또는 ['table'] (소스=대상 동일)"
+            "형식: ['source:target', ...] 또는 ['source:target:mode'] (소스=대상 동일 가능)"
         ),
     )
     mode: Optional[str] = Field(
@@ -219,9 +219,9 @@ class MigrationRequest(BaseModel):
     material_parse_config: Optional[str] = Field(
         default=None,
         description=(
-            "자재 파싱 설정 (형식: 소스테이블:파싱컬럼:키컬럼:대상테이블). "
+            "자재 파싱 설정 (형식: 소스테이블:파싱컬럼:대상테이블). "
             "미지정 시 환경변수 MIGRATION_MATERIAL_PARSE 사용. "
-            "예: eai_mt_zspmt_aibot_equip_error_monit:matnr:order_no:mt_material_usage"
+            "예: eai_mt_zspmt_aibot_equip_error_monit:matnr:mt_material_usage"
         ),
     )
     recreate_tables: bool = Field(
@@ -247,10 +247,9 @@ class MigrationTableResult(BaseModel):
 
 
 class MigrationMaterialResult(BaseModel):
-    """자재 사용 파싱 결과"""
+    """자재 사용 파싱 결과 (조인 키: isnum)"""
     source_table: str
     parse_column: str
-    key_column: str
     target_table: str
     source_rows: int
     parsed_rows: int
