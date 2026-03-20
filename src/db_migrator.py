@@ -588,7 +588,7 @@ class DBMigrator:
                 matnr_value = row[1]
 
                 parsed = self.parse_matnr(matnr_value)
-                if not parsed:
+                if len(parsed) != 3:
                     result['skipped_rows'] += 1
                     continue
 

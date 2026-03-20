@@ -973,15 +973,49 @@ class FileHandler:
                 logger.info(f"{ext.upper()} 파일 - 변환 없이 사용: {file_path.name}")
         
         elif ext in ['xlsx', 'xls', 'xlsm']:
-            # Excel 파일 - 모든 시트를 단순화된 Excel로 변환 (RAGFlow Table 파서 호환)
-            simplified_path = self._simplify_excel_for_table_parser(file_path)
-            if simplified_path:
-                results.append((simplified_path, 'xlsx'))
-                logger.info(f"Excel 파일 - 단순화 완료 (Table 파서용): {file_path.name} → {simplified_path.name}")
-            else:
-                # 단순화 실패 시 원본 사용
-                results.append((file_path, ext))
-                logger.warning(f"Excel 단순화 실패, 원본 사용: {file_path.name}")
+            # 고속차량 제원 비교표 접두어 파일 → 롱 포맷 테이블 xlsx (별도 모듈)
+            try:
+                from comparison_spec_long_format import (
+                    filename_matches_comparison_spec,
+                    transform_comparison_spec_workbook,
+                )
+                if filename_matches_comparison_spec(file_path):
+                    long_path = transform_comparison_spec_workbook(file_path, self.temp_dir)
+                    if long_path and long_path.exists():
+                        results.append((long_path, 'xlsx'))
+                        logger.info(
+                            f"Excel 파일 - 제원 비교표 롱 포맷 변환 (Table 파서용): "
+                            f"{file_path.name} → {long_path.name}"
+                        )
+                    else:
+                        simplified_path = self._simplify_excel_for_table_parser(file_path)
+                        if simplified_path:
+                            results.append((simplified_path, 'xlsx'))
+                            logger.info(
+                                f"Excel 파일 - 롱 포맷 미적용, 단순화: {file_path.name} → {simplified_path.name}"
+                            )
+                        else:
+                            results.append((file_path, ext))
+                            logger.warning(
+                                f"Excel 롱 포맷·단순화 실패, 원본 사용: {file_path.name}"
+                            )
+                else:
+                    simplified_path = self._simplify_excel_for_table_parser(file_path)
+                    if simplified_path:
+                        results.append((simplified_path, 'xlsx'))
+                        logger.info(
+                            f"Excel 파일 - 단순화 완료 (Table 파서용): {file_path.name} → {simplified_path.name}"
+                        )
+                    else:
+                        results.append((file_path, ext))
+                        logger.warning(f"Excel 단순화 실패, 원본 사용: {file_path.name}")
+            except Exception as e:
+                logger.warning(f"제원 비교표 변환 분기 오류, 일반 단순화 시도: {e}")
+                simplified_path = self._simplify_excel_for_table_parser(file_path)
+                if simplified_path:
+                    results.append((simplified_path, 'xlsx'))
+                else:
+                    results.append((file_path, ext))
         
         elif ext in ['hwp', 'hwpx', 'doc', 'docx', 'docm', 'odt', 'rtf', 'wps', 
                      'ods', 'csv', 

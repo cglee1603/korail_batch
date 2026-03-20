@@ -5,6 +5,7 @@
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 from enum import Enum
+import os
 import re
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
@@ -77,7 +78,30 @@ class ExcelProcessor:
         if not self.workbook:
             return []
         return self.workbook.sheetnames
-    
+
+    def _header_search_end_row(self, sheet: Worksheet) -> int:
+        """
+        헤더 후보 스캔 상한 (exclusive, range(1, end)).
+        기본: 상단 15행. 고속차량 제원 비교표 파일의 제원비교 시트는 N행(기본 6)까지만 스캔해
+        데이터 행(예: 13행 장문 셀)이 헤더로 오인되는 것을 방지.
+        """
+        max_row = (sheet.max_row or 0) + 1
+        default_end = min(15, max_row)
+        prefix = os.getenv("COMPARISON_SPEC_FILENAME_PREFIX", "고속차량 제원 비교표").strip()
+        if not prefix or not str(self.excel_path.stem).startswith(prefix):
+            return default_end
+        match_sub = os.getenv("COMPARISON_SPEC_HEADER_SHEET_MATCH", "제원비교").strip()
+        title = sheet.title or ""
+        if match_sub != "*" and match_sub and match_sub not in title:
+            return default_end
+        try:
+            cap = int(os.getenv("COMPARISON_SPEC_HEADER_MAX_ROW", "6"))
+        except ValueError:
+            cap = 6
+        if cap < 1:
+            cap = 6
+        return min(cap + 1, max_row)
+
     def detect_header_row(self, sheet: Worksheet) -> Tuple[int, int]:
         """
         헤더 행 자동 감지 (개선된 로직)
@@ -88,7 +112,7 @@ class ExcelProcessor:
         3. 단순 숫자나 짧은 텍스트만 있으면 제목일 가능성 높음
         4. 다음 행부터 규칙적인 데이터가 있음
         """
-        max_search_row = min(15, sheet.max_row + 1)
+        max_search_row = self._header_search_end_row(sheet)
         candidates = []
         
         for row_idx in range(1, max_search_row):
