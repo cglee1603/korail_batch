@@ -12,6 +12,14 @@ from excel_processor import ExcelProcessor
 from logger import logger
 from config import EXCEL_FILE_PATH, BATCH_SCHEDULE,FILE_SYSTEM_PATH
 
+# throttle-parse 기본값 (운영환경 맞게 여기만 수정)
+THROTTLE_DEFAULT_CONFIRM = True
+THROTTLE_DEFAULT_CONCURRENCY = 5
+THROTTLE_DEFAULT_CHECK_INTERVAL = 10
+THROTTLE_DEFAULT_INCLUDE_DONE = False
+THROTTLE_DEFAULT_INCLUDE_FAILED = False
+THROTTLE_DEFAULT_MAX_HOURS = 8.0
+
 
 def run_batch(excel_path: str = None, data_source: str = None, filesystem_path: str = None):
     """배치 작업 실행"""
@@ -30,6 +38,52 @@ def run_batch(excel_path: str = None, data_source: str = None, filesystem_path: 
     duration = end_time - start_time
     logger.info(f"배치 작업 종료 시간: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"총 소요 시간: {duration}\n")
+
+
+def run_check_and_parse(dataset_name: str):
+    """미파싱(Non-Failed) 문서 파싱 실행"""
+    processor = BatchProcessor()
+    processor.parse_non_failed_documents_by_dataset_name(dataset_name)
+
+
+def run_reparse_all(
+    dataset_name: str,
+    confirm: bool = False,
+    cancel_running: bool = False,
+    include_running: bool = False,
+    include_failed: bool = True
+):
+    """전체 재파싱 실행"""
+    processor = BatchProcessor()
+    processor.reparse_all_documents_by_dataset_name(
+        dataset_name=dataset_name,
+        confirm=confirm,
+        cancel_running=cancel_running,
+        include_running=include_running,
+        include_failed=include_failed
+    )
+
+
+def run_throttle_parse(
+    dataset_name: str,
+    confirm: bool = False,
+    concurrency_limit: int = None,
+    include_done: bool = False,
+    include_failed: bool = False,
+    check_interval: int = 10,
+    max_hours: float = 2.0
+):
+    """동시성 제한 파싱 실행"""
+    processor = BatchProcessor()
+    processor.throttle_parse_by_dataset_name(
+        dataset_name=dataset_name,
+        confirm=confirm,
+        concurrency_limit=concurrency_limit,
+        include_done=include_done,
+        include_failed=include_failed,
+        check_interval=check_interval,
+        max_hours=max_hours
+    )
 
 
 def parse_schedule_config(schedule_str: str):
@@ -62,31 +116,45 @@ def parse_schedule_config(schedule_str: str):
         return None
 
 
-def setup_schedule(excel_path: str = None, data_source: str = None, filesystem_path: str = None):
+def setup_schedule(
+    excel_path: str = None,
+    data_source: str = None,
+    filesystem_path: str = None,
+    schedule_str: str = None,
+    job_func=None,
+    job_kwargs=None
+):
     """스케줄 설정"""
-    schedule_config = parse_schedule_config(BATCH_SCHEDULE)
+    schedule_value = schedule_str or BATCH_SCHEDULE
+    schedule_config = parse_schedule_config(schedule_value)
+    target_job = job_func or run_batch
+    target_kwargs = job_kwargs or {
+        'excel_path': excel_path,
+        'data_source': data_source,
+        'filesystem_path': filesystem_path
+    }
     
     if not schedule_config:
         logger.warning("스케줄이 설정되지 않았습니다. 1회만 실행합니다.")
-        run_batch(excel_path, data_source, filesystem_path)
+        target_job(**target_kwargs)
         return False
     
     schedule_type, value = schedule_config
     
     if schedule_type == 'time':
         # 특정 시간에 실행
-        schedule.every().day.at(value).do(run_batch, excel_path=excel_path, data_source=data_source, filesystem_path=filesystem_path)
+        schedule.every().day.at(value).do(target_job, **target_kwargs)
         logger.info(f"스케줄 설정 완료: 매일 {value}에 실행")
     
     elif schedule_type == 'multiple':
         # 여러 시간에 실행
         for time_str in value:
-            schedule.every().day.at(time_str).do(run_batch, excel_path=excel_path, data_source=data_source, filesystem_path=filesystem_path)
+            schedule.every().day.at(time_str).do(target_job, **target_kwargs)
         logger.info(f"스케줄 설정 완료: 매일 {', '.join(value)}에 실행")
     
     elif schedule_type == 'interval':
         # 주기적 실행
-        schedule.every(value).seconds.do(run_batch, excel_path=excel_path, data_source=data_source, filesystem_path=filesystem_path)
+        schedule.every(value).seconds.do(target_job, **target_kwargs)
         logger.info(f"스케줄 설정 완료: {value}초마다 실행")
     
     return True
@@ -480,7 +548,7 @@ def main():
         return
 
     # 상태 확인 후 파싱 (Failed 제외)
-    if args.check_and_parse:
+    if args.check_and_parse and not args.schedule:
         processor = BatchProcessor()
         processor.parse_non_failed_documents_by_dataset_name(args.check_and_parse)
         return
@@ -492,7 +560,7 @@ def main():
         return
 
     # 전체 재파싱 (청크 리셋 후 재파싱)
-    if args.reparse_all:
+    if args.reparse_all and not args.schedule:
         processor = BatchProcessor()
         processor.reparse_all_documents_by_dataset_name(
             dataset_name=args.reparse_all,
@@ -504,16 +572,23 @@ def main():
         return
 
     # 동시성 제한 파싱 (현재 RUNNING 수 유지)
-    if args.throttle_parse:
+    if args.throttle_parse and not args.schedule:
+        throttle_confirm = args.confirm or THROTTLE_DEFAULT_CONFIRM
+        throttle_concurrency = args.concurrency if args.concurrency is not None else THROTTLE_DEFAULT_CONCURRENCY
+        throttle_include_done = args.include_done or THROTTLE_DEFAULT_INCLUDE_DONE
+        throttle_include_failed = args.include_failed or THROTTLE_DEFAULT_INCLUDE_FAILED
+        throttle_check_interval = args.check_interval if args.check_interval is not None else THROTTLE_DEFAULT_CHECK_INTERVAL
+        throttle_max_hours = args.max_hours if args.max_hours is not None else THROTTLE_DEFAULT_MAX_HOURS
+
         processor = BatchProcessor()
         processor.throttle_parse_by_dataset_name(
             dataset_name=args.throttle_parse,
-            confirm=args.confirm,
-            concurrency_limit=args.concurrency,
-            include_done=args.include_done,
-            include_failed=args.include_failed,
-            check_interval=args.check_interval,
-            max_hours=args.max_hours
+            confirm=throttle_confirm,
+            concurrency_limit=throttle_concurrency,
+            include_done=throttle_include_done,
+            include_failed=throttle_include_failed,
+            check_interval=throttle_check_interval,
+            max_hours=throttle_max_hours
         )
         return
 
@@ -534,9 +609,57 @@ def main():
     
     # 스케줄 실행
     logger.info("스케줄 모드로 시작")
+
+    schedule_job = run_batch
+    schedule_kwargs = {
+        'excel_path': excel_path,
+        'data_source': data_source,
+        'filesystem_path': filesystem_path
+    }
+
+    # --schedule과 함께 파싱 관련 옵션이 주어지면 해당 작업을 스케줄 대상로 사용
+    if args.check_and_parse:
+        schedule_job = run_check_and_parse
+        schedule_kwargs = {
+            'dataset_name': args.check_and_parse
+        }
+    elif args.reparse_all:
+        schedule_job = run_reparse_all
+        schedule_kwargs = {
+            'dataset_name': args.reparse_all,
+            'confirm': args.confirm,
+            'cancel_running': args.cancel_running,
+            'include_running': args.include_running,
+            'include_failed': not args.exclude_failed
+        }
+    elif args.throttle_parse:
+        throttle_confirm = args.confirm or THROTTLE_DEFAULT_CONFIRM
+        throttle_concurrency = args.concurrency if args.concurrency is not None else THROTTLE_DEFAULT_CONCURRENCY
+        throttle_include_done = args.include_done or THROTTLE_DEFAULT_INCLUDE_DONE
+        throttle_include_failed = args.include_failed or THROTTLE_DEFAULT_INCLUDE_FAILED
+        throttle_check_interval = args.check_interval if args.check_interval is not None else THROTTLE_DEFAULT_CHECK_INTERVAL
+        throttle_max_hours = args.max_hours if args.max_hours is not None else THROTTLE_DEFAULT_MAX_HOURS
+
+        schedule_job = run_throttle_parse
+        schedule_kwargs = {
+            'dataset_name': args.throttle_parse,
+            'confirm': throttle_confirm,
+            'concurrency_limit': throttle_concurrency,
+            'include_done': throttle_include_done,
+            'include_failed': throttle_include_failed,
+            'check_interval': throttle_check_interval,
+            'max_hours': throttle_max_hours
+        }
     
     # 스케줄 설정
-    has_schedule = setup_schedule(excel_path, data_source, filesystem_path)
+    has_schedule = setup_schedule(
+        excel_path=excel_path,
+        data_source=data_source,
+        filesystem_path=filesystem_path,
+        schedule_str=args.schedule,
+        job_func=schedule_job,
+        job_kwargs=schedule_kwargs
+    )
     
     if not has_schedule:
         # 스케줄이 없으면 종료

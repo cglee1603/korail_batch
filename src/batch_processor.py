@@ -1600,8 +1600,8 @@ class BatchProcessor:
             logger.info("\n" + "=" * 80)
             logger.info("모든 지식베이스 파싱 시작")
             logger.info("=" * 80)
-            
-            for idx, dataset in enumerate(all_datasets, 1):
+            # ALL: API 목록 역순으로 데이터셋별 파싱 (고정)
+            for idx, dataset in enumerate(reversed(all_datasets), 1):
                 ds_name = dataset.get('name')
                 logger.info(f"\n[{idx}/{len(all_datasets)}] 처리 중: {ds_name}")
                 logger.info("-" * 60)

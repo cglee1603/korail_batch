@@ -1,0 +1,15 @@
+# 배포: sudo cp ragflow-batch-api.logrotate /etc/logrotate.d/ragflow-batch-api
+# 경로·사용자는 서버 환경에 맞게 수정하세요.
+
+/home/minds/rag_batch/logs/service.log /home/minds/rag_batch/logs/service_error.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    dateformat -%Y%m%d
+    su minds minds
+    copytruncate
+}

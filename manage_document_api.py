@@ -1,12 +1,13 @@
 """
-RAGFlow Plus 배치 프로그램 API 서버 실행 스크립트
+RAGFlow Plus 배치 프로그램 문서/API 서버 실행 스크립트
+(구 start_api.py — systemd 등에서 이 파일을 진입점으로 사용)
 """
 import os
 import sys
 from pathlib import Path
 
 # src 디렉토리를 Python 경로에 추가
-src_path = Path(__file__).parent / "src"
+src_path = Path(__file__).resolve().parent / "src"
 sys.path.insert(0, str(src_path))
 
 if __name__ == "__main__":
@@ -40,4 +41,3 @@ if __name__ == "__main__":
         reload=False,
         log_level="info",
     )
-

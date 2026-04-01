@@ -8,7 +8,8 @@ User=minds
 Group=minds
 WorkingDirectory=/home/minds/rag_batch
 Environment=PATH=/home/minds/rag_batch/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/minds/rag_batch/venv/bin/python start_api.py
+EnvironmentFile=-/home/minds/rag_batch/.env
+ExecStart=/home/minds/rag_batch/venv/bin/python manage_document_api.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/home/minds/rag_batch/logs/service.log

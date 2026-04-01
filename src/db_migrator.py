@@ -61,6 +61,11 @@ MYSQL_TO_SA_TYPE = {
     'set':        Text,
 }
 
+SEARCH_TEXT_RULES = {
+    'mt_zspmt_aibot_equip_error_monit': ['flt_desc', 'flt_insdesc', 'flt_actdesc'],
+    'mt_zspmt_aibot_material_master': ['maktx'],
+}
+
 
 class DBMigrator:
     """MySQL → PostgreSQL 데이터 마이그레이션"""
@@ -207,6 +212,48 @@ class DBMigrator:
 
         return Text()
 
+    def _get_search_text_source_columns(self, table_name: str) -> Optional[List[str]]:
+        return SEARCH_TEXT_RULES.get(table_name)
+
+    def _build_search_text_value(self, table_name: str, row: Dict[str, Any]) -> Optional[str]:
+        source_columns = self._get_search_text_source_columns(table_name)
+        if not source_columns:
+            return None
+
+        values: List[str] = []
+        for col in source_columns:
+            value = row.get(col)
+            if value is None:
+                continue
+            values.append(str(value))
+        return '\n'.join(values)
+
+    def _enrich_rows_for_target(self, table_name: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return rows
+        if not self._get_search_text_source_columns(table_name):
+            return rows
+
+        for row in rows:
+            row['search_text'] = self._build_search_text_value(table_name, row)
+        return rows
+
+    def _ensure_search_text_column(self, table_name: str):
+        if not self._get_search_text_source_columns(table_name):
+            return
+
+        insp = inspect(self.target_engine)
+        if not insp.has_table(table_name):
+            return
+
+        existing_cols = {c['name'].lower() for c in insp.get_columns(table_name)}
+        if 'search_text' in existing_cols:
+            return
+
+        with self.target_engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN search_text TEXT"))
+        logger.info(f"대상 테이블 컬럼 추가: {table_name}.search_text")
+
     # ==================== 대상 테이블 관리 ====================
 
     def _drop_target_table(self, target_table: str):
@@ -233,6 +280,7 @@ class DBMigrator:
             if recreate:
                 self._drop_target_table(target_table)
             else:
+                self._ensure_search_text_column(target_table)
                 logger.info(f"대상 테이블 이미 존재: {target_table}")
                 return
 
@@ -249,6 +297,11 @@ class DBMigrator:
                 primary_key=col_info.get('is_pk', False),
                 nullable=col_info.get('nullable', True),
             ))
+
+        if self._get_search_text_source_columns(target_table):
+            existing_col_names = {c.name.lower() for c in cols}
+            if 'search_text' not in existing_col_names:
+                cols.append(Column('search_text', Text(), nullable=True))
 
         Table(target_table, metadata, *cols)
         metadata.create_all(self.target_engine)
@@ -321,11 +374,31 @@ class DBMigrator:
         col_list = ', '.join(all_cols)
         param_list = ', '.join(f":{c}" for c in all_cols)
         insert_sql = f"INSERT INTO {table_name} ({col_list}) VALUES ({param_list})"
+        stmt = text(insert_sql)
 
         total = len(rows)
+        sp_n = 0
         for i in range(0, total, self.batch_size):
             batch = rows[i:i + self.batch_size]
-            conn.execute(text(insert_sql), batch)
+            sp_batch = f"s_bi_{sp_n}"
+            sp_n += 1
+            conn.execute(text(f"SAVEPOINT {sp_batch}"))
+            try:
+                conn.execute(stmt, batch)
+                conn.execute(text(f"RELEASE SAVEPOINT {sp_batch}"))
+            except Exception as e:
+                conn.execute(text(f"ROLLBACK TO SAVEPOINT {sp_batch}"))
+                logger.warning(f"[Insert] {table_name} 배치 일부 실패, 건별 재시도: {e}")
+                for row in batch:
+                    sp_row = f"s_bi_{sp_n}"
+                    sp_n += 1
+                    conn.execute(text(f"SAVEPOINT {sp_row}"))
+                    try:
+                        conn.execute(stmt, row)
+                        conn.execute(text(f"RELEASE SAVEPOINT {sp_row}"))
+                    except Exception as row_e:
+                        conn.execute(text(f"ROLLBACK TO SAVEPOINT {sp_row}"))
+                        logger.warning(f"[Insert] {table_name} 행 스킵: {row_e}")
             logger.debug(f"[Insert] {table_name}: {min(i + self.batch_size, total)}/{total}")
 
     def _get_fks_referencing_table(self, table_name: str) -> List[Dict[str, str]]:
@@ -481,6 +554,7 @@ class DBMigrator:
             rows = self._extract(source_table, exclude_columns=exclude_columns)
             result['source_rows'] = len(rows)
             rows = self._transform_rows(rows)
+            rows = self._enrich_rows_for_target(target_table, rows)
 
             if exclude_columns:
                 exclude_set = set(c.lower() for c in exclude_columns)
@@ -533,6 +607,9 @@ class DBMigrator:
             if not group:
                 continue
             parts = group.split(',')
+            # 자재/수량/단위 3개 필드가 모두 있어야 유효한 항목으로 간주
+            if len(parts) < 3:
+                continue
             entry = {
                 'matnr': parts[0].strip() if len(parts) >= 1 else '',
                 'menge': parts[1].strip() if len(parts) >= 2 else '',
@@ -588,7 +665,8 @@ class DBMigrator:
                 matnr_value = row[1]
 
                 parsed = self.parse_matnr(matnr_value)
-                if len(parsed) != 3:
+                # 유효 파싱 결과가 하나도 없을 때만 소스 행 스킵
+                if not parsed:
                     result['skipped_rows'] += 1
                     continue
 

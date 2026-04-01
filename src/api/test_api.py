@@ -5,7 +5,7 @@ RAGFlow Plus Batch API 테스트 스크립트
 requests 라이브러리만 사용하므로 별도 테스트 프레임워크 설치가 필요 없습니다.
 
 사용법:
-    1) API 서버 실행:  python start_api.py
+    1) API 서버 실행:  python manage_document_api.py
     2) 테스트 실행:    python src/api/test_api.py
     3) 개별 테스트:    python src/api/test_api.py --test health
     4) 서버 주소 변경: python src/api/test_api.py --base-url http://192.168.0.10:8000
@@ -456,7 +456,7 @@ class APITester:
         server_ok = self.test_health()
         if not server_ok:
             print(f"\n{Colors.RED}서버 연결 실패. 테스트를 중단합니다.{Colors.END}")
-            print(f"서버 실행: python start_api.py")
+            print(f"서버 실행: python manage_document_api.py")
             return
 
         self.test_root()

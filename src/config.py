@@ -106,10 +106,25 @@ FILE_SYSTEM_PATH = os.getenv("FILE_SYSTEM_PATH","./data/filesystem")
 # 스케줄 설정
 BATCH_SCHEDULE = os.getenv("BATCH_SCHEDULE", "10:00")
 
+# throttle-parse 일배치 스케줄 설정 (HH:MM 형식, 비어있으면 비활성)
+THROTTLE_PARSE_SCHEDULE = os.getenv("THROTTLE_PARSE_SCHEDULE", "")
+# throttle-parse 대상 지식베이스명 ("ALL" 또는 특정 이름)
+THROTTLE_PARSE_DATASET = os.getenv("THROTTLE_PARSE_DATASET", "ALL")
+# throttle-parse 기본 실행 파라미터
+THROTTLE_PARSE_CONCURRENCY = int(os.getenv("THROTTLE_PARSE_CONCURRENCY", "5"))
+THROTTLE_PARSE_CHECK_INTERVAL = int(os.getenv("THROTTLE_PARSE_CHECK_INTERVAL", "10"))
+THROTTLE_PARSE_INCLUDE_DONE = os.getenv("THROTTLE_PARSE_INCLUDE_DONE", "false").lower() == "true"
+THROTTLE_PARSE_INCLUDE_FAILED = os.getenv("THROTTLE_PARSE_INCLUDE_FAILED", "false").lower() == "true"
+THROTTLE_PARSE_MAX_HOURS = float(os.getenv("THROTTLE_PARSE_MAX_HOURS", "8"))
+
 # 디렉토리 생성
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# 로그 파일 보관일 (batch_YYYYMMDD.log)
+# 0 이하: 보관 제한 없음, 양수: N일보다 오래된 로그 자동 삭제
+LOG_KEEP_DAYS = int(os.getenv("LOG_KEEP_DAYS", "30"))
 
 # 파일 변환 설정
 SUPPORTED_EXTENSIONS = {

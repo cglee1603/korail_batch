@@ -6,8 +6,10 @@
 - POST /parsing/{name}/throttle        : 동시성 제한 파싱 (비동기)
 """
 import traceback
+import threading
 from typing import Optional
 
+import schedule as schedule_lib
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
 from api.models import (
@@ -22,6 +24,34 @@ from logger import logger
 
 router = APIRouter(prefix="/parsing", tags=["Parsing"])
 job_manager = JobManager()
+
+_throttle_schedule_thread: Optional[threading.Thread] = None
+_throttle_schedule_stop_event = threading.Event()
+
+
+@router.on_event("startup")
+async def auto_start_throttle_schedule():
+    """
+    API 서버 시작 시 THROTTLE_PARSE_SCHEDULE가 설정되어 있으면
+    throttle 파싱 일배치 스케줄을 자동 시작합니다.
+    """
+    from config import THROTTLE_PARSE_SCHEDULE, THROTTLE_PARSE_DATASET
+
+    if not THROTTLE_PARSE_SCHEDULE:
+        return
+
+    try:
+        _start_throttle_schedule(
+            schedule_time=THROTTLE_PARSE_SCHEDULE,
+            dataset_name=THROTTLE_PARSE_DATASET,
+        )
+        logger.info(
+            "[API] THROTTLE_PARSE_SCHEDULE 자동 시작 완료: "
+            f"매일 {THROTTLE_PARSE_SCHEDULE} (dataset={THROTTLE_PARSE_DATASET})"
+        )
+    except Exception as e:
+        logger.error(f"[API] THROTTLE_PARSE_SCHEDULE 자동 시작 실패: {e}")
+        logger.error(traceback.format_exc())
 
 
 @router.post(
@@ -204,4 +234,98 @@ async def throttle_parse(
         status=JobStatus.QUEUED,
         message=f"동시성 제한 파싱 작업이 큐에 추가되었습니다. (대상: {dataset_name})",
         created_at=job_manager.get_job(job_id)["created_at"],
+    )
+
+
+def _scheduled_throttle_parse_job(
+    dataset_name: str,
+    concurrency: Optional[int],
+    check_interval: int,
+    include_done: bool,
+    include_failed: bool,
+    max_hours: float,
+):
+    """스케줄러에 의해 호출되는 throttle-parse 작업"""
+    from batch_processor import BatchProcessor
+
+    logger.info(f"[Schedule] throttle-parse 실행 시작 (dataset={dataset_name})")
+    try:
+        processor = BatchProcessor()
+        processor.throttle_parse_by_dataset_name(
+            dataset_name=dataset_name,
+            confirm=True,
+            concurrency_limit=concurrency,
+            include_done=include_done,
+            include_failed=include_failed,
+            check_interval=check_interval,
+            max_hours=max_hours,
+        )
+    except Exception as e:
+        logger.error(f"[Schedule] throttle-parse 실행 실패: {e}")
+        logger.error(traceback.format_exc())
+
+
+def _throttle_schedule_loop():
+    """throttle-parse 스케줄 실행 루프 (별도 스레드)"""
+    logger.info("[Schedule] throttle-parse 스케줄 루프 시작")
+    while not _throttle_schedule_stop_event.is_set():
+        schedule_lib.run_pending()
+        _throttle_schedule_stop_event.wait(timeout=10)
+    logger.info("[Schedule] throttle-parse 스케줄 루프 종료")
+
+
+def _start_throttle_schedule(
+    schedule_time: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+):
+    """throttle 파싱 일배치 스케줄 시작 (내부용)"""
+    global _throttle_schedule_thread
+    from config import (
+        THROTTLE_PARSE_SCHEDULE,
+        THROTTLE_PARSE_DATASET,
+        THROTTLE_PARSE_CONCURRENCY,
+        THROTTLE_PARSE_CHECK_INTERVAL,
+        THROTTLE_PARSE_INCLUDE_DONE,
+        THROTTLE_PARSE_INCLUDE_FAILED,
+        THROTTLE_PARSE_MAX_HOURS,
+    )
+
+    time_str = schedule_time or THROTTLE_PARSE_SCHEDULE
+    target_dataset = dataset_name or THROTTLE_PARSE_DATASET
+
+    if not time_str:
+        raise ValueError(
+            "스케줄 시간이 지정되지 않았습니다. "
+            "schedule_time 파라미터 또는 THROTTLE_PARSE_SCHEDULE 환경변수를 설정하세요."
+        )
+
+    if not target_dataset:
+        raise ValueError(
+            "대상 dataset이 지정되지 않았습니다. "
+            "dataset_name 파라미터 또는 THROTTLE_PARSE_DATASET 환경변수를 설정하세요."
+        )
+
+    if _throttle_schedule_thread and _throttle_schedule_thread.is_alive():
+        logger.info("[API] throttle 스케줄이 이미 실행 중이어서 자동 시작을 건너뜁니다.")
+        return
+
+    schedule_lib.every().day.at(time_str).do(
+        _scheduled_throttle_parse_job,
+        dataset_name=target_dataset,
+        concurrency=THROTTLE_PARSE_CONCURRENCY,
+        check_interval=THROTTLE_PARSE_CHECK_INTERVAL,
+        include_done=THROTTLE_PARSE_INCLUDE_DONE,
+        include_failed=THROTTLE_PARSE_INCLUDE_FAILED,
+        max_hours=THROTTLE_PARSE_MAX_HOURS,
+    ).tag("scheduled_throttle_parse")
+
+    _throttle_schedule_stop_event.clear()
+    _throttle_schedule_thread = threading.Thread(
+        target=_throttle_schedule_loop, daemon=True, name="throttle-parse-schedule"
+    )
+    _throttle_schedule_thread.start()
+
+    logger.info(
+        "[API] throttle 일배치 스케줄 시작: "
+        f"매일 {time_str} (dataset={target_dataset})"
     )

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run RAGFlow Throttle Parse ALL daily at 01:10
+
+[Timer]
+OnCalendar=*-*-* 01:10:00
+Persistent=true
+Unit=ragflow-throttle-parse.service
+
+[Install]
+WantedBy=timers.target

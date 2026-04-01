@@ -38,6 +38,27 @@ _schedule_stop_event = threading.Event()
 _last_run_time: Optional[str] = None
 
 
+@router.on_event("startup")
+async def auto_start_migration_schedule():
+    """
+    API 서버 시작 시 MIGRATION_SCHEDULE가 설정되어 있으면
+    DB 마이그레이션 일배치 스케줄을 자동 시작합니다.
+    """
+    from config import MIGRATION_SCHEDULE
+
+    if not MIGRATION_SCHEDULE:
+        return
+
+    try:
+        await start_schedule(schedule_time=MIGRATION_SCHEDULE)
+        logger.info(
+            f"[API] MIGRATION_SCHEDULE 자동 시작 완료: 매일 {MIGRATION_SCHEDULE}"
+        )
+    except Exception as e:
+        logger.error(f"[API] MIGRATION_SCHEDULE 자동 시작 실패: {e}")
+        logger.error(traceback.format_exc())
+
+
 def _build_migrator():
     """환경변수 기반으로 DBMigrator 인스턴스 생성"""
     from config import (
