@@ -397,7 +397,11 @@ async def start_schedule(schedule_time: Optional[str] = None):
         )
 
     if _schedule_thread and _schedule_thread.is_alive():
-        raise HTTPException(status_code=400, detail="이미 스케줄이 실행 중입니다.")
+        return {
+            "message": "일배치 스케줄이 이미 실행 중입니다.",
+            "schedule_time": time_str,
+            "tables": MIGRATION_TABLES,
+        }
 
     schedule_lib.every().day.at(time_str).do(
         _scheduled_migration_job
